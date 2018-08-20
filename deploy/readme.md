@@ -1,22 +1,9 @@
 # Deep Video Analytics deployment configurations
 
-#### Environment variables
+#### Developing Deep Video Analytics & two deployment
 
-- common.env contains environment variable used in both cpu and gpu/multi-gpu deployments.
+- /dockerfiles contains Dockerfiles required for building CPU and GPU container images
 
-#### Developing Deep Video Analytics
+- /compose contains docker-compose files for dev, test, cpu & gpu deployments
 
-- /dev contains a docker-compose file which maps host /server directory (relative path), and can be used
-       for interactively development and testing.
-
-#### Three deployment scenarios.
-
-1. /cpu contains docker-compose files for non-GPU single machine deployments on Linode, AWS, GCP etc.
-
-2. /gpu contains docker-compose files for GPU single machine deployments on GCP & AWS etc.
-
-3. /kube contains files used for launching DVA in a scalable GKE + GCS setup
-
-#### Container images
-
-- /dockerfiles contains Dockerfiles required for building containers
+- /kube contains files used for a scalable GKE + GCS setup, with both GPU and non-GPU node pools supported.

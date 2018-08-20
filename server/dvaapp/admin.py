@@ -1,9 +1,42 @@
 from django.contrib import admin
-from .models import Video, Frame, TEvent, IndexEntries, QueryResults, DVAPQL, \
-    Region, Tube, Segment, DeletedVideo, \
-    VideoLabel, FrameLabel, RegionLabel, TubeLabel, SegmentLabel, Label, ManagementAction, \
-    TrainedModel, Retriever, SystemState, Worker, QueryRegion, QueryRegionIndexVector, \
-    QueryRegionResults, TrainingSet
+from .models import Video, Frame, TEvent, IndexEntries, QueryResult, DVAPQL, Region, Tube, Segment, DeletedVideo, \
+    ManagementAction, TrainedModel, Retriever, SystemState, Worker, QueryRegion, TrainingSet, Export, TaskRestart, \
+    RegionRelation, TubeRelation, TubeRegionRelation, HyperRegionRelation, HyperTubeRegionRelation
+
+
+@admin.register(HyperRegionRelation)
+class HyperRegionRelationAdmin(admin.ModelAdmin):
+    pass
+
+
+@admin.register(HyperTubeRegionRelation)
+class HyperTubeRegionRelationAdmin(admin.ModelAdmin):
+    pass
+
+
+@admin.register(RegionRelation)
+class RegionRelationAdmin(admin.ModelAdmin):
+    pass
+
+
+@admin.register(TubeRelation)
+class TubeRelationAdmin(admin.ModelAdmin):
+    pass
+
+
+@admin.register(TubeRegionRelation)
+class TubeRegionRelationAdmin(admin.ModelAdmin):
+    pass
+
+
+@admin.register(TaskRestart)
+class TaskRestartAdmin(admin.ModelAdmin):
+    pass
+
+
+@admin.register(Export)
+class ExportAdmin(admin.ModelAdmin):
+    pass
 
 
 @admin.register(SystemState)
@@ -13,36 +46,6 @@ class SystemStateAdmin(admin.ModelAdmin):
 
 @admin.register(Worker)
 class WorkerAdmin(admin.ModelAdmin):
-    pass
-
-
-@admin.register(Label)
-class LabelAdmin(admin.ModelAdmin):
-    pass
-
-
-@admin.register(VideoLabel)
-class VideoLabelAdmin(admin.ModelAdmin):
-    pass
-
-
-@admin.register(FrameLabel)
-class FrameLabelAdmin(admin.ModelAdmin):
-    pass
-
-
-@admin.register(SegmentLabel)
-class SegmentLabelAdmin(admin.ModelAdmin):
-    pass
-
-
-@admin.register(RegionLabel)
-class RegionLabelAdmin(admin.ModelAdmin):
-    pass
-
-
-@admin.register(TubeLabel)
-class TubeLabelAdmin(admin.ModelAdmin):
     pass
 
 
@@ -66,7 +69,7 @@ class DeletedVideoAdmin(admin.ModelAdmin):
     pass
 
 
-@admin.register(QueryResults)
+@admin.register(QueryResult)
 class QueryResultsAdmin(admin.ModelAdmin):
     pass
 
@@ -74,6 +77,7 @@ class QueryResultsAdmin(admin.ModelAdmin):
 @admin.register(DVAPQL)
 class DVAPQLAdmin(admin.ModelAdmin):
     pass
+
 
 @admin.register(Frame)
 class FrameAdmin(admin.ModelAdmin):
@@ -112,16 +116,6 @@ class ManagementActionAdmin(admin.ModelAdmin):
 
 @admin.register(QueryRegion)
 class QueryRegionAdmin(admin.ModelAdmin):
-    pass
-
-
-@admin.register(QueryRegionIndexVector)
-class QueryRegionIndexVectorAdmin(admin.ModelAdmin):
-    pass
-
-
-@admin.register(QueryRegionResults)
-class QueryRegionResultsAdmin(admin.ModelAdmin):
     pass
 
 

@@ -9,13 +9,14 @@ import logging
 import numpy as np
 from .base_analyzer import BaseAnnotator
 from collections import namedtuple
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../repos/"))  # remove once container is rebuild
 
 if os.environ.get('PYTORCH_MODE',False):
-    import dvalib.crnn.utils as utils
-    import dvalib.crnn.dataset as dataset
+    import crnn.utils as utils
+    import crnn.dataset as dataset
     import torch
     from torch.autograd import Variable
-    import dvalib.crnn.models.crnn as crnn
+    import crnn.models.crnn as crnn_model
     logging.info("In pytorch mode, not importing TF")
 elif os.environ.get('CAFFE_MODE',False):
     pass
@@ -29,7 +30,6 @@ else:
     slim = tf.contrib.slim
 
 Batch = namedtuple('Batch', ['data'])
-
 
 
 def inception_preprocess(image, central_fraction=0.875):
@@ -115,10 +115,10 @@ class CRNNAnnotator(BaseAnnotator):
     def load(self):
         logging.info("Loding CRNN model first apply will be slow")
         if torch.cuda.is_available():
-            self.session = crnn.CRNN(32, 1, 37, 256, 1).cuda()
+            self.session = crnn_model.CRNN(32, 1, 37, 256, 1).cuda()
             self.cuda = True
         else:
-            self.session = crnn.CRNN(32, 1, 37, 256, 1)
+            self.session = crnn_model.CRNN(32, 1, 37, 256, 1)
         self.session.load_state_dict(torch.load(self.model_path))
         self.session.eval()
         self.converter = utils.strLabelConverter(self.alphabet)
@@ -136,7 +136,6 @@ class CRNNAnnotator(BaseAnnotator):
         image = Variable(image)
         preds = self.session(image)
         _, preds = preds.max(2)
-        preds = preds.squeeze(2)
         preds = preds.transpose(1, 0).contiguous().view(-1)
         preds_size = Variable(torch.IntTensor([preds.size(0)]))
         sim_pred = self.converter.decode(preds.data, preds_size.data, raw=False)

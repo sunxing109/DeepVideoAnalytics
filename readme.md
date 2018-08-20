@@ -1,5 +1,5 @@
-# Deep Video Analytics &nbsp; &nbsp; [![Build Status](https://travis-ci.org/AKSHAYUBHAT/DeepVideoAnalytics.svg?branch=master)](https://travis-ci.org/AKSHAYUBHAT/DeepVideoAnalytics)
-#### by [Akshay Bhat, Cornell University.](http://www.akshaybhat.com)  
+# Deep Video Analytics &nbsp; &nbsp; [![Build Status](https://travis-ci.org/AKSHAYUBHAT/DeepVideoAnalytics.svg?branch=master)](https://travis-ci.org/AKSHAYUBHAT/DeepVideoAnalytics) [![Build Status](https://travis-ci.org/AKSHAYUBHAT/DeepVideoAnalytics.svg?branch=stable)](https://travis-ci.org/AKSHAYUBHAT/DeepVideoAnalytics/branches)
+#### by [Akshay Bhat](http://www.akshaybhat.com)
 
 ![UI Screenshot](docs/figures/emma.png "Emma Watson, from poster of her latest subject appropriate movie The Circle")
 
@@ -7,48 +7,44 @@ Deep Video Analytics is a platform for indexing and extracting information from 
 With latest version of docker installed correctly, you can run Deep Video Analytics in minutes
 locally (even without a GPU) using a single command.
 
-#### For installation instructions & demo please visit [https://www.deepvideoanalytics.com](https://www.deepvideoanalytics.com)
+### Architecture
 
-### Documentation & tutorial
+Deep Video Analytics implements a client-server architecture pattern, where clients can access state of the server
+via a REST API. For uploading, processing data, training models, performing queries, i.e. mutating the state
+clients can send DVAPQL (Deep Video Analytics Processing and Query Language) formatted as JSON. The query represents
+a directed acyclic graph of operations.
+
+### Visual Data Network
+
+A separate repository [VisualDataNetwork/root](https://github.com/VisualDataNetwork/root) maintains examples of
+DVAPQL scripts for performing tasks such as processing image dataset (e.g. COCO), Youtube videos, Twitch livestreams,
+training FAISS indexers  etc.
+
+
+### Installation & Demo
+
+Please visit [https://www.deepvideoanalytics.com](https://www.deepvideoanalytics.com)
+
+### Documentation
 
 - For a quick overview we **strongly recommend** going through the [presentation in readme.pdf](/docs/readme.pdf)
-
-- Documentation along with a tutorial is being written in [/docs/tutorial](/docs/tutorial) directory.
 
 ### Experiments
 
 - **OCR example has been moved to [/docs/experiments/ocr](/docs/experiments/ocr) directory**.
-- More experiments coming soon!
-
-
-### Deployment
-
-We provide instructions for deploying DVA in three scenarios.
-
-1. [deploy/cpu](/deploy/cpu) contains docker-compose files for non-GPU single machine deployments on Linode, AWS, GCP etc.
-
-2. [deploy/gpu](/deploy/gpu) contains docker-compose files for GPU single machine deployments on GCP, AWS etc.
-
-3. [deploy/kube](/deploy/kube) contains files used for launching DVA in a scalable GKE + GCS setup
-
-
-### Development
-
-- [deploy/dev](/deploy/dev) contains docker-compose files for interactively developing DVA by using  host server directory mapped as a volume.
-
 
 ### Code organization
 
 - /client : Python client using DVA REST API
-- /configs : ngnix config + defaults.py defining models + processing pipelines (can be replaced by mounting a volume)
-- /deploy : Dockerfiles + Instructions for development, single machine deployment abnd scalable deployment with Kubernetes
+- /configs : ngnix config + default models + processing pipelines
+- /deploy : Dockerfiles + Instructions for development, single machine deployment and scalable deployment with Kubernetes
 - /docs : Documentation, tutorial and experiments
-- /tests : Files required for testing
+- /tests : Tests, Notebooks for interactive debugging andtest data
 - /repos : Code copied from third party repos, e.g. Yahoo LOPQ, TF-CTPN etc.
 - /server : dvalib + django server contains contains bulk of the code for UI, App and models.
 - /logs : Empty dir for storing logs
 
-### Libraries modified in code and their licenses
+### Libraries present in this repository and their licenses
 
 | Library  | Link to the license | 
 | -------- | ------------------- |
@@ -58,21 +54,26 @@ We provide instructions for deploying DVA in three scenarios.
 | Facenet   |  [MIT License](https://github.com/davidsandberg/facenet)  |
 | JSFeat   |  [MIT License](https://inspirit.github.io/jsfeat/)  |
 | MTCNN   |  [MIT License](https://github.com/kpzhang93/MTCNN_face_detection_alignment)  |
+| Insight Face   |  [MIT License](https://github.com/deepinsight/insightface)  |
 | CRNN.pytorch  |  [MIT License](https://github.com/meijieru/crnn.pytorch/blob/master/LICENSE.md)  |
 | Original CRNN code by Baoguang Shi  |  [MIT License](https://github.com/bgshih/crnn) |
 | Object Detector App using TF Object detection API |  [MIT License](https://github.com/datitran/Object-Detector-App) | 
 | Plotly.js |  [MIT License](https://github.com/plotly/plotly.js/blob/master/LICENSE) | 
-| CRF as RNN  |  [MIT License](https://github.com/sadeepj/crfasrnn_keras/blob/master/LICENSE) | 
-| Text Detection CTPN  |  [MIT License](https://github.com/eragonruan/text-detection-ctpn/LICENSE) | 
+| Text Detection CTPN  |  [MIT License](https://github.com/eragonruan/text-detection-ctpn/LICENSE) |
 | SphereFace  |  [MIT License](https://github.com/wy1iu/sphereface/blob/master/license) |
 | Segment annotator  |   [BSD 3-clause](https://github.com/kyamagu/js-segment-annotator/blob/master/LICENSE) |
-| TF Object detection API  | [Apache 2.0](https://github.com/tensorflow/models/tree/master/research/object_detection) |
-| TF models/slim  | [Apache 2.0](https://github.com/tensorflow/models/tree/master/research/slim) |
-| TF models/delf  | [Apache 2.0](https://github.com/tensorflow/models/tree/master/research/delf) |
-| Youtube 8M feature extractor  | [Apache 2.0](https://github.com/google/youtube-8m) |
-| CROW   |  [Apache 2.0](https://github.com/yahoo/crow/blob/master/LICENSE)  | 
+| Youtube 8M feature extractor weights  | [Apache 2.0](https://github.com/google/youtube-8m) |
 | LOPQ   |  [Apache 2.0](https://github.com/yahoo/lopq/blob/master/LICENSE)  | 
 | Open Images Pre-trained network  |  [Apache 2.0](https://github.com/openimages/dataset/blob/master/LICENSE) |
+| Interval Tree  |  [Apache 2.0](https://github.com/chaimleib/intervaltree) |
+
+### Libraries present in container (/root/thirdparty/)
+
+| Library  | Link to the license |
+| -------- | ------------------- |
+| faiss | [BSD + PATENTS License](https://github.com/facebookresearch/faiss/blob/master/LICENSE) |
+| dlib | [Boost Software License](https://github.com/davisking/dlib/blob/master/dlib/LICENSE.txt) |
+
 
 
 ### Additional libraries & frameworks
@@ -83,20 +84,20 @@ We provide instructions for deploying DVA in three scenarios.
 * Numpy
 * Pytorch
 * Docker
+* LMDB
 * Nvidia-docker
 * Docker-compose
 * All packages in [requirements.txt](/requirements.txt)
-* All dependancies in [Dockerfile](/deploy/dockerfiles/Dockerfile)
-
+* All dependancies installed in [CPU Dockerfile](/deploy/dockerfiles/Dockerfile) & [GPU Dockerfile](/deploy/dockerfiles/Dockerfile.gpu)
 
 
 # License & Copyright
 
-**Copyright 2016-2017, Akshay Bhat, Cornell University, All rights reserved.**
+**Copyright 2016-2018, Akshay Bhat, All rights reserved.**
 
 # Contact
 
-Deep Video Analytics is currently in active development.
+Deep Video Analytics is nearing stable 1.0, we expect to release in Summer 2018.
 The license will be relaxed once a stable release version is reached.
-Please contact me for more information. For more information see [answer on this issue](https://github.com/AKSHAYUBHAT/DeepVideoAnalytics/issues/29)
+Please contact me for more information.
  

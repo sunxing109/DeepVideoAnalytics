@@ -1,30 +1,25 @@
 from django.shortcuts import render, redirect
 from django.conf import settings
+from collections import defaultdict
 from django.http import JsonResponse
-import glob
 import json
 from django.views.generic import ListView, DetailView
-from django.utils import timezone
 from .forms import UploadFileForm, YTVideoForm, AnnotationForm
-from dvaapp.models import Video, Frame, DVAPQL, QueryResults, TEvent, IndexEntries, Region, \
-    Tube,  Segment, FrameLabel, SegmentLabel, \
-    VideoLabel, RegionLabel, TubeLabel, Label, ManagementAction, \
-    TrainedModel, Retriever, SystemState, QueryRegion, QueryRegionResults, Worker, TrainingSet
+from dvaapp.models import Video, Frame, DVAPQL, TaskRestart, TEvent, IndexEntries, Region, \
+    Tube, Segment, ManagementAction, \
+    TrainedModel, Retriever, SystemState, Worker, TrainingSet, Export
 from .models import StoredDVAPQL, ExternalServer
 from dva.celery import app
-from django.contrib.auth.models import User
-from django.db.models import Count
 import math
 from django.db.models import Max
 import view_shared
 from dvaapp.processing import DVAPQLProcess
-from django.contrib.auth.decorators import user_passes_test,login_required
+from django.contrib.auth.decorators import user_passes_test, login_required
 from django.utils.decorators import method_decorator
 from django.contrib.auth.mixins import UserPassesTestMixin
 from django_celery_results.models import TaskResult
 from rest_framework.authtoken.models import Token
 import logging
-import defaults
 
 try:
     from django.contrib.postgres.search import SearchVector
@@ -54,7 +49,7 @@ class VideoList(UserPassesTestMixin, ListView):
 
     def get_context_data(self, **kwargs):
         context = super(VideoList, self).get_context_data(**kwargs)
-        context['exports'] = TEvent.objects.all().filter(operation='perform_export')
+        context['exports'] = Export.objects.all().filter(export_type=Export.VIDEO_EXPORT)
         return context
 
     def test_func(self):
@@ -67,6 +62,7 @@ class TEventDetail(UserPassesTestMixin, DetailView):
 
     def get_context_data(self, **kwargs):
         context = super(TEventDetail, self).get_context_data(**kwargs)
+        context['child_tasks'] = TEvent.objects.filter(parent_id=context['object'].pk)
         try:
             tr = TaskResult.objects.get(task_id=context['object'].task_id)
         except TaskResult.DoesNotExist:
@@ -80,22 +76,6 @@ class TEventDetail(UserPassesTestMixin, DetailView):
         return user_check(self.request.user)
 
 
-class LabelDetail(UserPassesTestMixin, DetailView):
-    model = Label
-    template_name = "dvaui/label_detail.html"
-
-    def get_context_data(self, **kwargs):
-        context = super(LabelDetail, self).get_context_data(**kwargs)
-        context['frames'] = FrameLabel.objects.filter(label=context['object'])
-        context['videos'] = VideoLabel.objects.filter(label=context['object'])
-        context['segments'] = SegmentLabel.objects.filter(label=context['object'])
-        context['regions'] = RegionLabel.objects.filter(label=context['object'])
-        return context
-
-    def test_func(self):
-        return user_check(self.request.user)
-
-
 class TEventList(UserPassesTestMixin, ListView):
     model = TEvent
     paginate_by = 500
@@ -103,11 +83,11 @@ class TEventList(UserPassesTestMixin, ListView):
 
     def get_queryset(self):
         kwargs = {}
-        if self.kwargs.get('pk',None):
-            kwargs['video_id']=self.kwargs['pk']
-        elif self.kwargs.get('process_pk',None):
-            kwargs['parent_process_id']=self.kwargs['process_pk']
-        if self.kwargs.get('status',None):
+        if self.kwargs.get('pk', None):
+            kwargs['video_id'] = self.kwargs['pk']
+        elif self.kwargs.get('process_pk', None):
+            kwargs['parent_process_id'] = self.kwargs['process_pk']
+        if self.kwargs.get('status', None):
             if self.kwargs['status'] == 'running':
                 kwargs['duration__lt'] = 0
                 kwargs['started'] = True
@@ -121,20 +101,36 @@ class TEventList(UserPassesTestMixin, ListView):
                 kwargs['errored'] = False
             elif self.kwargs['status'] == 'failed':
                 kwargs['errored'] = True
-        new_context = TEvent.objects.filter(**kwargs).order_by('-created')
+        new_context = TEvent.objects.filter(**kwargs).order_by('-created').prefetch_related('video')
         return new_context
 
     def get_context_data(self, **kwargs):
         view_shared.refresh_task_status()
         context = super(TEventList, self).get_context_data(**kwargs)
-        context['header'] = ""
-        if self.kwargs.get('pk',None):
+        started_series = {}
+        created_series = {}
+        points = defaultdict(list)
+        for k in context['object_list']:
+            series_name = '{} on {}'.format(k.operation, k.queue)
+            if k.start_ts:
+                if series_name not in started_series:
+                    started_series[series_name] = {'name':series_name, 'type': "scatter",'x':[],'y':[],"mode":"markers"}
+                started_series[series_name]['x'].append(str(k.start_ts))
+                started_series[series_name]['y'].append(k.duration)
+            if series_name not in created_series:
+                created_series[series_name] = {'name':series_name, 'type': "scatter",'x':[],'y':[],"mode":"markers"}
+            created_series[series_name]['x'].append(str(k.created))
+            created_series[series_name]['y'].append(k.duration)
+        context['start_plot_data'] = json.dumps(started_series.values())
+        context['created_plot_data'] = json.dumps(created_series.values())
+        context['header'] = "Across all processes"
+        if self.kwargs.get('pk', None):
             context['video'] = Video.objects.get(pk=self.kwargs['pk'])
             context['header'] = "video/dataset : {}".format(context['video'].name)
-        if self.kwargs.get('process_pk',None):
-            process_pk = self.kwargs.get('process_pk',None)
+        if self.kwargs.get('process_pk', None):
+            process_pk = self.kwargs.get('process_pk', None)
             context['header'] = "process : {}".format(process_pk)
-        if self.kwargs.get('status',None):
+        if self.kwargs.get('status', None):
             context['header'] += " with status {}".format(self.kwargs['status'])
         return context
 
@@ -146,7 +142,6 @@ class VideoDetail(UserPassesTestMixin, DetailView):
     model = Video
     template_name = "dvaui/video_detail.html"
 
-
     def get_context_data(self, **kwargs):
         context = super(VideoDetail, self).get_context_data(**kwargs)
         max_frame_index = Frame.objects.all().filter(video=self.object).aggregate(Max('frame_index'))[
@@ -157,7 +152,6 @@ class VideoDetail(UserPassesTestMixin, DetailView):
         context['exportable_annotation_count'] = 0
         context['url'] = '{}{}/video/{}.mp4'.format(settings.MEDIA_URL, self.object.pk, self.object.pk)
         label_list = []
-        show_all = self.request.GET.get('show_all_labels', False)
         context['label_list'] = label_list
         delta = 10000
         if context['object'].dataset:
@@ -188,10 +182,12 @@ class VideoDetail(UserPassesTestMixin, DetailView):
                                               range(int(math.ceil(max_frame_index / float(delta))))]
         context['frame_first'] = context['frame_list'].first()
         context['frame_last'] = context['frame_list'].last()
-        context['pending_tasks'] = TEvent.objects.all().filter(video=self.object,started=False, errored=False).count()
-        context['running_tasks'] = TEvent.objects.all().filter(video=self.object,started=True, completed=False, errored=False).count()
-        context['successful_tasks'] = TEvent.objects.all().filter(video=self.object,completed=True).count()
-        context['errored_tasks'] = TEvent.objects.all().filter(video=self.object,errored=True).count()
+        context['segments'] = Segment.objects.filter(video=self.object)
+        context['pending_tasks'] = TEvent.objects.all().filter(video=self.object, started=False, errored=False).count()
+        context['running_tasks'] = TEvent.objects.all().filter(video=self.object, started=True, completed=False,
+                                                               errored=False).count()
+        context['successful_tasks'] = TEvent.objects.all().filter(video=self.object, completed=True).count()
+        context['errored_tasks'] = TEvent.objects.all().filter(video=self.object, errored=True).count()
         if context['limit'] > max_frame_index:
             context['limit'] = max_frame_index
         context['max_frame_index'] = max_frame_index
@@ -207,8 +203,12 @@ class FrameDetail(UserPassesTestMixin, DetailView):
 
     def get_context_data(self, **kwargs):
         context = super(FrameDetail, self).get_context_data(**kwargs)
-        context['detection_list'] = Region.objects.all().filter(frame=self.object, region_type=Region.DETECTION)
-        context['annotation_list'] = Region.objects.all().filter(frame=self.object, region_type=Region.ANNOTATION)
+        context['detection_list'] = Region.objects.all().filter(frame_index=self.object.frame_index,
+                                                                video_id=self.object.video_id,
+                                                                region_type=Region.DETECTION)
+        context['annotation_list'] = Region.objects.all().filter(frame_index=self.object.frame_index,
+                                                                 video_id=self.object.video_id,
+                                                                 region_type=Region.ANNOTATION)
         context['video'] = self.object.video
         context['url'] = '{}{}/frames/{}.jpg'.format(settings.MEDIA_URL, self.object.video.pk, self.object.frame_index)
         context['previous_frame'] = Frame.objects.filter(video=self.object.video,
@@ -230,11 +230,19 @@ class SegmentDetail(UserPassesTestMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super(SegmentDetail, self).get_context_data(**kwargs)
         context['video'] = self.object.video
-        context['frame_list'] = Frame.objects.all().filter(video=self.object.video,segment_index=self.object.segment_index).order_by('frame_index')
-        context['region_list'] = Region.objects.all().filter(video=self.object.video,segment_index=self.object.segment_index).order_by('frame_index')
-        context['url'] = '{}{}/segments/{}.mp4'.format(settings.MEDIA_URL, self.object.video.pk, self.object.segment_index)
+        context['frame_list'] = Frame.objects.all().filter(video=self.object.video,
+                                                           segment_index=self.object.segment_index).order_by(
+            'frame_index')
+        context['region_list'] = Region.objects.all().filter(video=self.object.video,
+                                                             segment_index=self.object.segment_index).order_by(
+            'frame_index')
+        context['url'] = '{}{}/segments/{}.mp4'.format(settings.MEDIA_URL, self.object.video.pk,
+                                                       self.object.segment_index)
         context['previous_segment_index'] = self.object.segment_index - 1 if self.object.segment_index else None
-        context['next_segment_index'] = self.object.segment_index + 1 if (self.object.segment_index+1) < self.object.video.segments else None
+        if (self.object.segment_index + 1) < self.object.video.segments:
+            context['next_segment_index'] = self.object.segment_index + 1
+        else:
+            context['next_segment_index'] = None
         return context
 
     def test_func(self):
@@ -259,17 +267,23 @@ class VisualSearchDetail(UserPassesTestMixin, DetailView):
 
     def get_context_data(self, **kwargs):
         context = super(VisualSearchDetail, self).get_context_data(**kwargs)
-        qp = DVAPQLProcess(process=context['object'],media_dir=settings.MEDIA_ROOT)
+        qp = DVAPQLProcess(process=context['object'], media_dir=settings.MEDIA_ROOT)
         qp_context = view_shared.collect(qp)
         context['results'] = qp_context['results'].items()
-        context['regions'] = qp_context['regions']
+        context['regions'] = []
+        for k in qp_context['regions']:
+            if 'results' in k and k['results']:
+                k['results'] = k['results'].items()
+            context['regions'].append(k)
         script = context['object'].script
         script[u'image_data_b64'] = "<excluded>"
         context['plan'] = script
-        context['pending_tasks'] = TEvent.objects.all().filter(parent_process=self.object,started=False, errored=False).count()
-        context['running_tasks'] = TEvent.objects.all().filter(parent_process=self.object,started=True, completed=False, errored=False).count()
-        context['successful_tasks'] = TEvent.objects.all().filter(parent_process=self.object,completed=True).count()
-        context['errored_tasks'] = TEvent.objects.all().filter(parent_process=self.object,errored=True).count()
+        context['pending_tasks'] = TEvent.objects.all().filter(parent_process=self.object, started=False,
+                                                               errored=False).count()
+        context['running_tasks'] = TEvent.objects.all().filter(parent_process=self.object, started=True,
+                                                               completed=False, errored=False).count()
+        context['successful_tasks'] = TEvent.objects.all().filter(parent_process=self.object, completed=True).count()
+        context['errored_tasks'] = TEvent.objects.all().filter(parent_process=self.object, errored=True).count()
         context['url'] = '{}queries/{}.png'.format(settings.MEDIA_URL, self.object.uuid)
         return context
 
@@ -314,6 +328,7 @@ class TrainedModelList(UserPassesTestMixin, ListView):
 
     def get_context_data(self, **kwargs):
         context = super(TrainedModelList, self).get_context_data(**kwargs)
+        context['exports'] = Export.objects.filter(export_type=Export.MODEL_EXPORT)
         return context
 
     def test_func(self):
@@ -326,18 +341,6 @@ class TrainedModelDetail(UserPassesTestMixin, DetailView):
 
     def get_context_data(self, **kwargs):
         context = super(TrainedModelDetail, self).get_context_data(**kwargs)
-        classdist = context['object'].class_distribution.strip()
-        context['class_distribution'] = json.loads(classdist) if classdist else {}
-        context['phase_1_log'] = []
-        context['phase_2_log'] = []
-        for k in context['object'].phase_1_log.split('\n')[1:]:
-            if k.strip():
-                epoch,train_loss,val_loss = k.strip().split(',')
-                context['phase_1_log'].append((epoch,round(float(train_loss),2),round(float(val_loss),2)))
-        for k in context['object'].phase_2_log.split('\n')[1:]:
-            if k.strip():
-                epoch,train_loss,val_loss = k.strip().split(',')
-                context['phase_2_log'].append((epoch,round(float(train_loss),2),round(float(val_loss),2)))
         return context
 
     def test_func(self):
@@ -349,8 +352,24 @@ class TrainingSetList(UserPassesTestMixin, ListView):
     template_name = "dvaui/training_set_list.html"
     paginate_by = 50
 
+    class Meta:
+        ordering = ["-created"]
+
     def get_context_data(self, **kwargs):
         context = super(TrainingSetList, self).get_context_data(**kwargs)
+        return context
+
+    def test_func(self):
+        return user_check(self.request.user)
+
+
+class TrainingSetDetail(UserPassesTestMixin, DetailView):
+    model = TrainingSet
+    template_name = "dvaui/training_set_detail.html"
+
+    def get_context_data(self, **kwargs):
+        context = super(TrainingSetDetail, self).get_context_data(**kwargs)
+        context['trained_model_set'] = TrainedModel.objects.filter(training_set=context['object'])
         return context
 
     def test_func(self):
@@ -376,11 +395,13 @@ class ProcessDetail(UserPassesTestMixin, DetailView):
 
     def get_context_data(self, **kwargs):
         context = super(ProcessDetail, self).get_context_data(**kwargs)
-        context['json'] = json.dumps(context['object'].script,indent=4)
-        context['pending_tasks'] = TEvent.objects.all().filter(parent_process=self.object,started=False, errored=False).count()
-        context['running_tasks'] = TEvent.objects.all().filter(parent_process=self.object,started=True, completed=False, errored=False).count()
-        context['successful_tasks'] = TEvent.objects.all().filter(parent_process=self.object,completed=True).count()
-        context['errored_tasks'] = TEvent.objects.all().filter(parent_process=self.object,errored=True).count()
+        context['json'] = json.dumps(context['object'].script, indent=4)
+        context['pending_tasks'] = TEvent.objects.all().filter(parent_process=self.object, started=False,
+                                                               errored=False).count()
+        context['running_tasks'] = TEvent.objects.all().filter(parent_process=self.object, started=True,
+                                                               completed=False, errored=False).count()
+        context['successful_tasks'] = TEvent.objects.all().filter(parent_process=self.object, completed=True).count()
+        context['errored_tasks'] = TEvent.objects.all().filter(parent_process=self.object, errored=True).count()
         return context
 
     def test_func(self):
@@ -397,9 +418,11 @@ class StoredProcessList(UserPassesTestMixin, ListView):
         context = super(StoredProcessList, self).get_context_data(**kwargs)
         context['indexers'] = TrainedModel.objects.filter(model_type=TrainedModel.INDEXER)
         context['approximators'] = TrainedModel.objects.filter(model_type=TrainedModel.APPROXIMATOR)
-        context['models'] = TrainedModel.objects.filter(model_type__in=[TrainedModel.INDEXER,TrainedModel.DETECTOR,
+        context['models'] = TrainedModel.objects.filter(model_type__in=[TrainedModel.INDEXER, TrainedModel.DETECTOR,
                                                                         TrainedModel.ANALYZER])
         context["videos"] = Video.objects.all()
+        context["approx_training_sets"] = TrainingSet.objects.filter(training_task_type=TrainingSet.TRAINAPPROX,
+                                                                   built=True)
         return context
 
     def test_func(self):
@@ -412,7 +435,7 @@ class StoredProcessDetail(UserPassesTestMixin, DetailView):
 
     def get_context_data(self, **kwargs):
         context = super(StoredProcessDetail, self).get_context_data(**kwargs)
-        context['json'] = json.dumps(context['object'].script,indent=4)
+        context['json'] = json.dumps(context['object'].script, indent=4)
         return context
 
     def test_func(self):
@@ -423,16 +446,12 @@ class StoredProcessDetail(UserPassesTestMixin, DetailView):
 def search(request):
     if request.method == 'POST':
         qp = DVAPQLProcess()
-        view_shared.create_query_from_request(qp,request)
+        view_shared.create_query_from_request(qp, request)
         qp.launch()
-        qp.wait()
-        qp_context = view_shared.collect(qp)
-        return JsonResponse(data={'task_id': "",
-                                  'primary_key': qp.process.pk,
-                                  'results': qp_context['results'],
-                                  'regions': qp_context['regions'],
-                                  'url': '{}queries/{}.png'.format(settings.MEDIA_URL, qp.process.uuid)
-                                  })
+        qp.wait_query()
+        return JsonResponse(data={'url': '/queries/{}/'.format(qp.process.pk)})
+    else:
+        raise ValueError("Only POST method is valid")
 
 
 @user_passes_test(user_check)
@@ -447,18 +466,19 @@ def index(request, query_pk=None, frame_pk=None, detection_pk=None):
             raise ValueError
     else:
         form = UploadFileForm()
-    context = {'form': form}
-    context['detectors'] = TrainedModel.objects.filter(model_type=TrainedModel.DETECTOR)
-    context['indexer_retrievers'] = []
+    context = {'form': form,
+               'detectors': TrainedModel.objects.filter(model_type=TrainedModel.DETECTOR),
+               'indexer_retrievers': []}
     for i in TrainedModel.objects.filter(model_type=TrainedModel.INDEXER):
         for r in Retriever.objects.all():
-            if  i.shasum and r.indexer_shasum == i.shasum:
+            if i.shasum and r.indexer_shasum == i.shasum:
                 context['indexer_retrievers'].append(('{} > {} retriever {} (pk:{})'.format(i.name,
-                                                      r.get_algorithm_display(),r.name,r.pk),
-                                                      '{}_{}'.format(i.pk,r.pk)))
+                                                                                            r.get_algorithm_display(),
+                                                                                            r.name, r.pk),
+                                                      '{}_{}'.format(i.pk, r.pk)))
     if query_pk:
         previous_query = DVAPQL.objects.get(pk=query_pk)
-        context['initial_url'] = '{}queries/{}.png'.format(settings.MEDIA_URL, query_pk)
+        context['initial_url'] = '{}queries/{}.png'.format(settings.MEDIA_URL, previous_query.uuid)
     elif frame_pk:
         frame = Frame.objects.get(pk=frame_pk)
         context['initial_url'] = '{}{}/frames/{}.jpg'.format(settings.MEDIA_URL, frame.video.pk, frame.frame_index)
@@ -469,6 +489,7 @@ def index(request, query_pk=None, frame_pk=None, detection_pk=None):
     context['frame_count'] = Frame.objects.count()
     context['query_count'] = DVAPQL.objects.filter(process_type=DVAPQL.QUERY).count()
     context['process_count'] = DVAPQL.objects.filter(process_type=DVAPQL.PROCESS).count()
+    context['restart_count'] = TaskRestart.objects.filter().count()
     context['index_entries_count'] = IndexEntries.objects.count()
     context['task_events_count'] = TEvent.objects.count()
     context['pending_tasks'] = TEvent.objects.all().filter(started=False, errored=False).count()
@@ -486,37 +507,15 @@ def index(request, query_pk=None, frame_pk=None, detection_pk=None):
     context['script_count'] = StoredDVAPQL.objects.all().count()
     context['tube_count'] = Tube.objects.all().count()
     context["videos"] = Video.objects.all().filter()
-    context['detector_count'] = TrainedModel.objects.filter(model_type=TrainedModel.DETECTOR).count()
-    context['rate'] = defaults.DEFAULT_RATE
+    context["exported_video_count"] = Export.objects.filter(export_type=Export.VIDEO_EXPORT).count()
+    context["exported_model_count"] = Export.objects.filter(export_type=Export.MODEL_EXPORT).count()
+    context['rate'] = settings.DEFAULT_RATE
     return render(request, 'dvaui/dashboard.html', context)
-
-
-@user_passes_test(user_check)
-def assign_video_labels(request):
-    if request.method == 'POST':
-        video = Video.objects.get(pk=request.POST.get('video_pk'))
-        spec = []
-        for k in request.POST.get('labels').split(','):
-            if k.strip():
-                spec.append({
-                    'MODEL':'VideoLabel',
-                    'spec':{'video_id':video.pk,'label_id':Label.objects.get_or_create(name=k,set="UI")[0].id}
-                })
-        p = DVAPQLProcess()
-        p.create_from_json({
-            'process_type':DVAPQL.PROCESS,
-            'create':spec,
-        },user=request.user if request.user.is_authenticated else None)
-        p.launch()
-        return redirect('video_detail', pk=video.pk)
-    else:
-        raise NotImplementedError
 
 
 @user_passes_test(user_check)
 def annotate(request, frame_pk):
     context = {'frame': None, 'detection': None, 'existing': []}
-    frame = None
     frame = Frame.objects.get(pk=frame_pk)
     context['frame'] = frame
     context['initial_url'] = '{}{}/frames/{}.jpg'.format(settings.MEDIA_URL, frame.video.pk, frame.frame_index)
@@ -524,8 +523,9 @@ def annotate(request, frame_pk):
         '-frame_index')[0:1]
     context['next_frame'] = Frame.objects.filter(video=frame.video, frame_index__gt=frame.frame_index).order_by(
         'frame_index')[0:1]
-    context['detections'] = Region.objects.filter(frame=frame, region_type=Region.DETECTION)
-    for d in Region.objects.filter(frame=frame):
+    context['detections'] = Region.objects.filter(video=frame.video, frame_index=frame.frame_index,
+                                                  region_type=Region.DETECTION)
+    for d in Region.objects.filter(video=frame.video, frame_index=frame.frame_index):
         temp = {
             'x': d.x,
             'y': d.y,
@@ -543,50 +543,12 @@ def annotate(request, frame_pk):
         form = AnnotationForm(request.POST)
         if form.is_valid():
             applied_tags = form.cleaned_data['tags'].split(',') if form.cleaned_data['tags'] else []
-            view_shared.create_annotation(form, form.cleaned_data['object_name'], applied_tags, frame)
+            view_shared.create_annotation(form, form.cleaned_data['object_name'], applied_tags, frame,
+                                          user=request.user if request.user.is_authenticated else None)
             return JsonResponse({'status': True})
         else:
-            raise ValueError, form.errors
+            raise ValueError(form.errors)
     return render(request, 'dvaui/annotate.html', context)
-
-
-@user_passes_test(user_check)
-def annotate_entire_frame(request, frame_pk):
-    frame = Frame.objects.get(pk=frame_pk)
-    annotation = None
-    if request.method == 'POST':
-        if request.POST.get('text').strip() \
-                or request.POST.get('metadata').strip() \
-                or request.POST.get('object_name', None):
-            annotation = Region()
-            annotation.region_type = Region.ANNOTATION
-            annotation.x = 0
-            annotation.y = 0
-            annotation.h = 0
-            annotation.w = 0
-            annotation.full_frame = True
-            annotation.text = request.POST.get('text')
-            annotation.metadata = request.POST.get('metadata')
-            annotation.object_name = request.POST.get('object_name', 'frame_metadata')
-            annotation.frame = frame
-            annotation.video = frame.video
-            annotation.save()
-        for label_name in request.POST.get('tags').split(','):
-            if label_name.strip():
-                if annotation:
-                    dl = RegionLabel()
-                    dl.video = frame.video
-                    dl.frame = frame
-                    dl.label = Label.objects.get_or_create(name=label_name,set="UI")[0]
-                    dl.region = annotation
-                    dl.save()
-                else:
-                    dl = FrameLabel()
-                    dl.video = frame.video
-                    dl.frame = frame
-                    dl.label = Label.objects.get_or_create(name=label_name,set="UI")[0]
-                    dl.save()
-    return redirect("frame_detail", pk=frame.pk)
 
 
 @user_passes_test(user_check)
@@ -605,33 +567,33 @@ def yt(request):
                             'name': name,
                             'uploader_id': user.pk if user else None,
                             'url': path,
-                            'youtube_video': True,
                             'created': '__timezone.now__'
                         },
                         'MODEL': 'Video',
-                        'tasks': [
-                            {'video_id': '__pk__',
-                             'operation': 'perform_import',
-                             'arguments': {'path': path,
-                                           'force_youtube_dl': True,
-                                           'map': [{
-                                               'operation': 'perform_video_segmentation',
-                                               'arguments': {
-                                                   'map': [
-                                                       {'operation': 'perform_video_decode',
-                                                        'arguments': {
-                                                            'rate': defaults.DEFAULT_RATE,
-                                                            'segments_batch_size': defaults.DEFAULT_SEGMENTS_BATCH_SIZE,
-                                                            'map': json.load(file("../configs/custom_defaults/video_processing.json"))
-                                                        }
-                                                        }
-                                                   ]},
-                                           }, ]
-                                           }
-                             },
-                        ]
                     },
                 ],
+                'map': [
+                    {'video_id': '__created__0',
+                     'operation': 'perform_import',
+                     'arguments': {
+                         'force_youtube_dl': True,
+                         'map': [{
+                             'operation': 'perform_video_segmentation',
+                             'arguments': {
+                                 'map': [
+                                     {'operation': 'perform_video_decode',
+                                      'arguments': {
+                                          'rate': settings.DEFAULT_RATE,
+                                          'segments_batch_size': settings.DEFAULT_SEGMENTS_BATCH_SIZE,
+                                          'map': json.load(
+                                              file("../configs/custom_defaults/processing.json"))['video']
+                                      }
+                                      }
+                                 ]},
+                         }, ]
+                     }
+                     },
+                ]
             }
             p = DVAPQLProcess()
             p.create_from_json(process_spec, user)
@@ -644,9 +606,24 @@ def yt(request):
 
 
 @user_passes_test(user_check)
-def segment_by_index(request,pk,segment_index):
-    segment = Segment.objects.get(video_id=pk,segment_index=segment_index)
-    return redirect('segment_detail',pk=segment.pk)
+def segment_by_index(request, pk, segment_index):
+    segment = Segment.objects.get(video_id=pk, segment_index=segment_index)
+    return redirect('segment_detail', pk=segment.pk)
+
+
+@user_passes_test(user_check)
+def frame_by_index(request, pk, frame_index):
+    try:
+        df = Frame.objects.get(video_id=pk, frame_index=frame_index)
+    except:
+        df = None
+        pass
+    if df:
+        return redirect('frame_detail', pk=df.pk)
+    else:
+        # If the frame has not been decoded return the nearest segment
+        segment = Segment.objects.filter(video_id=pk, start_index__lte=frame_index).order_by('-start_index').first()
+        return redirect('segment_detail', pk=segment.pk)
 
 
 @user_passes_test(user_check)
@@ -658,24 +635,22 @@ def export_video(request):
         if video:
             if export_method == 's3':
                 path = request.POST.get('path')
-                process_spec = {'process_type':DVAPQL.PROCESS,
-                          'tasks':[
-                              {
-                                  'video_id':video.pk,
-                                  'operation':'perform_export',
-                                  'arguments': {'path':path}
-                              },
-                          ]}
+                process_spec = {'process_type': DVAPQL.PROCESS,
+                                'map': [
+                                    {
+                                        'operation': 'perform_export',
+                                        'arguments': {'path': path, 'video_selector': {'pk': video.pk}, }
+                                    },
+                                ]}
             else:
-                process_spec = {'process_type':DVAPQL.PROCESS,
-                          'tasks':[
-                              {
-                                  'video_id':video.pk,
-                                  'operation':'perform_export',
-                                  'arguments':{'destination':'FILE'}
-                              },
-                          ]
-                          }
+                process_spec = {'process_type': DVAPQL.PROCESS,
+                                'map': [
+                                    {
+                                        'operation': 'perform_export',
+                                        'arguments': {'video_selector': {'pk': video.pk}, }
+                                    },
+                                ]
+                                }
             p = DVAPQLProcess()
             p.create_from_json(process_spec)
             p.launch()
@@ -685,37 +660,19 @@ def export_video(request):
 
 
 @user_passes_test(user_check)
-def status(request):
-    context = {}
-    context['logs'] = []
-    for fname in glob.glob('logs/*.log'):
-        context['logs'].append((fname,file(fname).read()))
-    return render(request, 'dvaui/status.html', context)
-
-
-@user_passes_test(user_check)
 def management(request):
     timeout = 1.0
     context = {
-        'timeout':timeout,
-        'actions':ManagementAction.objects.all(),
+        'timeout': timeout,
+        'actions': ManagementAction.objects.all(),
         'workers': Worker.objects.all(),
-        'state':SystemState.objects.all().order_by('-created')[:100]
+        'restarts': TaskRestart.objects.all(),
+        'state': SystemState.objects.all().order_by('-created')[:100]
     }
     if request.method == 'POST':
-        op = request.POST.get("op","")
-        host_name = request.POST.get("host_name","").strip()
-        queue_name = request.POST.get("queue_name","").strip()
-        if op =="list_workers":
-            context["queues"] = app.control.inspect(timeout=timeout).active_queues()
-        elif op == "list":
-            t = app.send_task('manage_host', args=[op, ], exchange='qmanager')
-            t.wait(timeout=timeout)
-        elif op == "gpuinfo":
-            t = app.send_task('manage_host', args=[op, ], exchange='qmanager')
-            t.wait(timeout=timeout)
-        elif op == "launch":
-            t = app.send_task('manage_host', args=[op,host_name,queue_name],exchange='qmanager')
+        op = request.POST.get("op", "")
+        if op == "list":
+            t = app.send_task('manage_host', args=[], exchange='qmanager')
             t.wait(timeout=timeout)
     return render(request, 'dvaui/management.html', context)
 
@@ -725,8 +682,8 @@ def textsearch(request):
     context = {'results': {}, "videos": Video.objects.all().filter()}
     q = request.GET.get('q')
     if q:
-        offset = int(request.GET.get('offset',0))
-        delta = int(request.GET.get('delta',25))
+        offset = int(request.GET.get('offset', 0))
+        delta = int(request.GET.get('delta', 25))
         limit = offset + delta
         context['q'] = q
         context['next'] = limit
@@ -738,50 +695,39 @@ def textsearch(request):
             context['results']['regions_name'] = Region.objects.filter(object_name__search=q)[offset:limit]
         if request.GET.get('frames'):
             context['results']['frames_name'] = Frame.objects.filter(name__search=q)[offset:limit]
-            context['results']['frames_subdir'] = Frame.objects.filter(subdir__search=q)[offset:limit]
-        if request.GET.get('labels'):
-            context['results']['labels'] = Label.objects.filter(name__search=q)[offset:limit]
     return render(request, 'dvaui/textsearch.html', context)
 
 
 @user_passes_test(user_check)
 def submit_process(request):
     if request.method == 'POST':
-        process_pk = request.POST.get('process_pk',None)
+        process_pk = request.POST.get('process_pk', None)
         if process_pk is None:
             p = DVAPQLProcess()
-            p.create_from_json(j=json.loads(request.POST.get('script')), user=request.user if request.user.is_authenticated else None)
+            p.create_from_json(j=json.loads(request.POST.get('script')),
+                               user=request.user if request.user.is_authenticated else None)
             p.launch()
         else:
             p = DVAPQLProcess(process=DVAPQL.objects.get(pk=process_pk))
             p.launch()
-        return redirect("process_detail",pk=p.process.pk)
+        return redirect("process_detail", pk=p.process.pk)
 
 
 @user_passes_test(user_check)
 def validate_process(request):
     if request.method == 'POST':
         p = DVAPQLProcess()
-        p.create_from_json(j=json.loads(request.POST.get('script')), user=request.user if request.user.is_authenticated else None)
+        p.create_from_json(j=json.loads(request.POST.get('script')),
+                           user=request.user if request.user.is_authenticated else None)
         p.validate()
-    return redirect("process_detail",pk=p.process.pk)
-
-
-@user_passes_test(user_check)
-def delete_object(request):
-    if request.method == 'POST':
-        pk = request.POST.get('pk')
-        if request.POST.get('object_type') == 'annotation':
-            annotation = Region.objects.get(pk=pk)
-            if annotation.region_type == Region.ANNOTATION:
-                annotation.delete()
-    return JsonResponse({'status': True})
+        return redirect("process_detail", pk=p.process.pk)
+    else:
+        raise ValueError("Request must be a POST")
 
 
 @user_passes_test(force_user_check)
 def security(request):
-    context = {}
-    context['username'] = request.user.username
+    context = {'username': request.user.username}
     token, created = Token.objects.get_or_create(user=request.user if request.user.is_authenticated else None)
     context['token'] = token
     return render(request, 'dvaui/security.html', context=context)
@@ -791,34 +737,11 @@ def security(request):
 def expire_token(request):
     # TODO Check if this is correct
     if request.method == 'POST':
-        if request.POST.get('expire',False):
+        if request.POST.get('expire', False):
             token, created = Token.objects.get_or_create(user=request.user if request.user.is_authenticated else None)
             if not created:
                 token.delete()
     return redirect("security")
-
-
-@user_passes_test(user_check)
-def import_dataset(request):
-    if request.method == 'POST':
-        url = request.POST.get('dataset_url')
-        user = request.user if request.user.is_authenticated else None
-        view_shared.import_vdn_dataset_url(None, url, user, None)
-    else:
-        raise NotImplementedError
-    return redirect('video_list')
-
-
-@user_passes_test(user_check)
-def import_detector(request):
-    if request.method == 'POST':
-        url = request.POST.get('detector_url')
-        user = request.user if request.user.is_authenticated else None
-        cached_response = None # last_response_detectors[int(request.POST.get('dindex'))]
-        view_shared.import_vdn_detector_url(None, url, user, None)
-    else:
-        raise NotImplementedError
-    return redirect('models')
 
 
 @user_passes_test(user_check)
@@ -827,49 +750,51 @@ def import_s3(request):
         keys = request.POST.get('key')
         user = request.user if request.user.is_authenticated else None
         create = []
+        map_tasks = []
+        counter = 0
         for key in keys.strip().split('\n'):
             dataset_type = False
-            if key.startswith('gs://') or key.startswith('s3://'):
-                tasks =[]
-                key = key.strip()
-                if key:
-                    extract_task = {'arguments': {'map': json.load(file("../configs/custom_defaults/dataset_processing.json"))},
-                                     'operation': 'perform_dataset_extraction'}
-                    segment_decode_task = {'operation': 'perform_video_segmentation',
-                                            'arguments': {
-                                                'map': [
-                                                    {'operation': 'perform_video_decode',
-                                                     'arguments': {
-                                                         'segments_batch_size':defaults.DEFAULT_SEGMENTS_BATCH_SIZE,
-                                                         'map': json.load(file("../configs/custom_defaults/video_processing.json"))
-                                                    }
+            key = key.strip()
+            if key:
+                extract_task = {
+                    'arguments': {'map': json.load(file("../configs/custom_defaults/processing.json"))['dataset']},
+                    'operation': 'perform_dataset_extraction'}
+                segment_decode_task = {'operation': 'perform_video_segmentation',
+                                       'arguments': {
+                                           'map': [
+                                               {'operation': 'perform_video_decode',
+                                                'arguments': {
+                                                    'segments_batch_size': settings.DEFAULT_SEGMENTS_BATCH_SIZE,
+                                                    'map': json.load(
+                                                        file("../configs/custom_defaults/processing.json"))['video']
                                                 }
-                                                ]},
-                                            }
-                    if key.endswith('.dva_export.zip'):
-                        next_tasks = []
-                    elif key.endswith('.zip'):
-                        next_tasks = [extract_task,]
-                        dataset_type = True
-                    else:
-                        next_tasks = [segment_decode_task,]
-                    tasks.append({'video_id':'__pk__',
-                                  'operation':'perform_import',
-                                  'arguments':{'path':key,
-                                               'source':'REMOTE',
-                                               'map':next_tasks}
+                                                }
+                                           ]},
+                                       }
+                if key.endswith('.dva_export'):
+                    next_tasks = []
+                elif key.endswith('.zip'):
+                    next_tasks = [extract_task, ]
+                    dataset_type = True
+                else:
+                    next_tasks = [segment_decode_task, ]
+                map_tasks.append({'video_id': '__created__{}'.format(counter),
+                                  'operation': 'perform_import',
+                                  'arguments': {
+                                      'source': 'REMOTE',
+                                      'map': next_tasks}
                                   })
-                    create.append({'MODEL': 'Video',
-                                   'spec': {'uploader_id': user.pk if user else None, 'dataset': dataset_type,
-                                            'name': key},
-                                   'tasks': tasks
-                                   })
-            else:
-                raise NotImplementedError("{} startswith an unknown remote store prefix".format(key))
+                create.append({'MODEL': 'Video',
+                               'spec': {'uploader_id': user.pk if user else None, 'dataset': dataset_type,
+                                        'name': key, 'url': key},
+                               })
+                counter += 1
         process_spec = {'process_type': DVAPQL.PROCESS,
-                        'create':create}
+                        'create': create,
+                        'map': map_tasks
+                        }
         p = DVAPQLProcess()
-        p.create_from_json(process_spec,user)
+        p.create_from_json(process_spec, user)
         p.launch()
     else:
         raise NotImplementedError
@@ -879,7 +804,7 @@ def import_s3(request):
 @user_passes_test(user_check)
 def pull_external(request):
     if request.method == 'POST':
-        server_pk = request.POST.get('server_pk',None)
+        server_pk = request.POST.get('server_pk', None)
         s = ExternalServer.objects.get(pk=server_pk)
         s.pull()
     return redirect('external')
@@ -888,7 +813,7 @@ def pull_external(request):
 @user_passes_test(user_check)
 def external(request):
     context = {
-        'servers':ExternalServer.objects.all(),
+        'servers': ExternalServer.objects.all(),
         'scripts': StoredDVAPQL.objects.all(),
     }
     return render(request, 'dvaui/external_data.html', context)
@@ -899,11 +824,11 @@ def retry_task(request):
     pk = request.POST.get('pk')
     event = TEvent.objects.get(pk=int(pk))
     spec = {
-        'process_type':DVAPQL.PROCESS,
-        'tasks':[
+        'process_type': DVAPQL.PROCESS,
+        'map': [
             {
-                'operation':event.operation,
-                'arguments':event.arguments
+                'operation': event.operation,
+                'arguments': event.arguments
             }
         ]
     }
@@ -915,22 +840,9 @@ def retry_task(request):
 
 @user_passes_test(user_check)
 def delete_video(request):
-    if request.user.is_staff: # currently only staff can delete
+    if request.user.is_staff:  # currently only staff can delete
         video_pk = request.POST.get('video_id')
-        view_shared.delete_video_object(video_pk,request.user)
-        return redirect('video_list')
-    else:
-        return redirect('accounts/login/')
-
-
-@user_passes_test(user_check)
-def rename_video(request):
-    if request.user.is_staff: # currently only staff can rename
-        video_pk = request.POST.get('video_id')
-        name = request.POST.get('name')
-        v = Video.objects.get(pk=int(video_pk))
-        v.name = name
-        v.save()
+        view_shared.delete_video_object(video_pk, request.user)
         return redirect('video_list')
     else:
         return redirect('accounts/login/')
@@ -941,22 +853,22 @@ def shortcuts(request):
     user = request.user if request.user.is_authenticated else None
     if request.method == 'POST':
         if request.POST.get('op') == 'apply':
-            jf = request.POST.get("filters",'{}')
+            jf = request.POST.get("filters", '{}')
             filters = json.loads(jf) if jf.strip() else {}
             model_pk = request.POST.get("model_pk")
             video_pks = request.POST.getlist('video_pk')
             target = request.POST.get('target')
-            frames_batch_size = request.POST.get('frames_batch_size',)
+            frames_batch_size = request.POST.get('frames_batch_size', )
             if not frames_batch_size:
-                frames_batch_size = defaults.DEFAULT_FRAMES_BATCH_SIZE
+                frames_batch_size = settings.DEFAULT_FRAMES_BATCH_SIZE
             segments_batch_size = request.POST.get('segments_batch_size')
             if not segments_batch_size:
-                segments_batch_size = defaults.DEFAULT_SEGMENTS_BATCH_SIZE
-            process_pk = view_shared.model_apply(model_pk,video_pks,filters,target,int(segments_batch_size),
-                                                 int(frames_batch_size),user)
-            return redirect('process_detail',pk=process_pk)
+                segments_batch_size = settings.DEFAULT_SEGMENTS_BATCH_SIZE
+            process_pk = view_shared.model_apply(model_pk, video_pks, filters, target, int(segments_batch_size),
+                                                 int(frames_batch_size), user)
+            return redirect('process_detail', pk=process_pk)
         elif request.POST.get('op') == 'create_retriever':
-            jf = request.POST.get("source_filters",'{}')
+            jf = request.POST.get("source_filters", '{}')
             filters = json.loads(jf) if jf.strip() else {}
             name = request.POST.get('name')
             indexer_shasum = request.POST.get('indexer_shasum')
@@ -966,64 +878,30 @@ def shortcuts(request):
                 algorithm = Retriever.LOPQ
             else:
                 algorithm = Retriever.EXACT
-            _ = view_shared.create_retriever(name,algorithm,filters,indexer_shasum,approximator_shasum,user)
+            _ = view_shared.create_retriever(name, algorithm, filters, indexer_shasum, approximator_shasum, user)
             return redirect('retriever_list')
+        elif request.POST.get('op') == 'create_approximator_training_set':
+            name = request.POST.get('name')
+            video_pks = request.POST.getlist('video_pk')
+            indexer_shasum = request.POST.get('indexer_shasum')
+            _ = view_shared.create_approximator_training_set(name, indexer_shasum, video_pks, user)
+            return redirect('training_set_list')
+        elif request.POST.get('op') == 'perform_approximator_training':
+            training_set_pk = request.POST.get('lopq_training_set_pk')
+            dt = TrainingSet.objects.get(pk=training_set_pk)
+            args = {'trainer': "LOPQ",
+                    'name': request.POST.get('name'),
+                    'indexer_shasum': dt.source_filters['indexer_shasum'],
+                    'components': request.POST.get('components'),
+                    'm': request.POST.get('m'),
+                    'v': request.POST.get('v'),
+                    'sub': request.POST.get('sub')}
+            process_pk = view_shared.perform_training(training_set_pk, args, user)
+            return redirect('process_detail', process_pk)
+        elif request.POST.get('op') == 'export_model':
+            process_pk = view_shared.perform_model_export(request.POST.get('model_pk'), user)
+            return redirect('process_detail', process_pk)
         else:
             raise NotImplementedError(request.POST.get('op'))
     else:
         raise NotImplementedError("Only POST allowed")
-
-
-
-# @user_passes_test(user_check)
-# def index_video(request):
-#     if request.method == 'POST':
-#         filters = {
-#             'region_type__in': request.POST.getlist('region_type__in', []),
-#             'w__gte': int(request.POST.get('w__gte')),
-#             'h__gte': int(request.POST.get('h__gte'))
-#          }
-#         for optional_key in ['text__contains', 'object_name__contains', 'object_name']:
-#             if request.POST.get(optional_key, None):
-#                 filters[optional_key] = request.POST.get(optional_key)
-#         for optional_key in ['h__lte', 'w__lte']:
-#             if request.POST.get(optional_key, None):
-#                 filters[optional_key] = int(request.POST.get(optional_key))
-#         args = {'filters':filters,'index':request.POST.get('visual_index_name')}
-#         p = DVAPQLProcess()
-#         spec = {
-#             'process_type':DVAPQL.PROCESS,
-#             'tasks':[
-#                 {
-#                     'operation':'perform_indexing',
-#                     'arguments':args,
-#                     'video_id':request.POST.get('video_id')
-#                 }
-#             ]
-#         }
-#         user = request.user if request.user.is_authenticated else None
-#         p.create_from_json(spec,user)
-#         p.launch()
-#         redirect('process_detail',pk=p.process.pk)
-#     else:
-#         raise ValueError
-#
-#
-# @user_passes_test(user_check)
-# def detect_objects(request):
-#     if request.method == 'POST':
-#         detector_pk = request.POST.get('detector_pk')
-#         video_pk = request.POST.get('video_pk')
-#         p = DVAPQLProcess()
-#         p.create_from_json(j={
-#             "process_type":DVAPQL.PROCESS,
-#             "tasks":[{'operation':"perform_detection",
-#                       'arguments':{'detector_pk': int(detector_pk),'detector':"custom"},
-#                       'video_id':video_pk}]
-#         },user=request.user if request.user.is_authenticated else None)
-#         p.launch()
-#         return redirect('process_detail',pk=p.process.pk)
-#     else:
-#         raise ValueError
-
-

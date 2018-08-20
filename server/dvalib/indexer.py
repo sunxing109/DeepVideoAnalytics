@@ -1,8 +1,7 @@
-import os, logging
+import os, logging, sys
 import numpy as np
-from collections import namedtuple
 from .base_indexer import BaseIndexer
-
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../repos/"))  # remove once container is rebuilt
 
 if os.environ.get('PYTORCH_MODE', False):
     pass
@@ -11,12 +10,13 @@ elif os.environ.get('CAFFE_MODE', False):
 else:
     try:
         from tensorflow.python.platform import gfile
-        from facenet import facenet
         import tensorflow as tf
     except ImportError:
         logging.warning("Could not import Tensorflow assuming operating in either frontend or caffe/pytorch mode")
+    else:
+        from facenet import facenet
 
-IndexRange = namedtuple('IndexRange', ['start', 'end'])
+
 
 
 def _parse_function(filename):

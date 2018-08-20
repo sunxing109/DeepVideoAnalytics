@@ -1,0 +1,35 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: {name}
+  labels:
+    name: {name}
+spec:
+  replicas: 1
+  progressDeadlineSeconds: 600
+  minReadySeconds: 15
+  revisionHistoryLimit: 5
+  template:
+    metadata:
+      labels:
+        name: {name}
+    spec:
+      containers:
+      - image: {cpu_image}
+        imagePullPolicy: "IfNotPresent"
+        resources:
+          requests:
+            memory: "{request_memory}"
+            cpu: "{request_cpu}"
+          limits:
+            memory: "{max_memory}"
+            cpu: "{max_cpu}"
+        name: {name}
+        env:
+        - name: {worker_env}
+          value: "1"
+{common}
+        args:
+          - bash
+          - -c
+          - {command}

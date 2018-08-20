@@ -1,17 +1,15 @@
 from collections import namedtuple
 import logging
 import base64
-import tempfile
-from PIL import Image as PImage
 import requests
-import cStringIO
 
 try:
+    from PIL import Image as PImage
     from IPython.display import Image, display
 except:
     logging.warning("Cannot import IPython display")
 
-VSResult = namedtuple('VSResult',field_names=['rank','entry','region','frame'])
+VSResult = namedtuple('VSResult',field_names=['rank','entry','region','frame_index','video_id'])
 
 
 def crop_region_url(url,region):
@@ -34,23 +32,23 @@ class VisualSearchResults(object):
             self.query_region = None
             self.description = "Task ID {task_id} operation: {operation} with retriever {pk} " \
                              "and max_results {count}".format(task_id=task['id'], operation=task['operation'],
-                                                              pk=task['arguments']['retriever_pk'],
+                                                              pk=task['arguments']['retriever_selector'],
                                                               count=task['arguments']['count'])
             for r in task['query_results']:
-                frame = self.query.context.get_frame(r['frame'])
-                if r['detection']:
-                    region = self.query.context.get_region(r['detection'])
-                    self.similar_images.append((r['rank'],VSResult(rank=r['rank'],entry=r,frame=frame,
-                                                                   region=region)))
+                if r['region']:
+                    region = self.query.context.get_region(r['region'])
+                    self.similar_images.append((r['rank'],VSResult(rank=r['rank'],entry=r,frame_index=r['frame_index'],
+                                                                   region=region,video_id=r['video'])))
                 else:
-                    self.similar_images.append((r['rank'],VSResult(rank=r['rank'],entry=r,frame=frame,region=None)))
+                    self.similar_images.append((r['rank'],VSResult(rank=r['rank'],entry=r,frame_index=r['frame_index'],
+                                                                   region=None,video_id=r['video'])))
             self.similar_images = sorted(self.similar_images)
         else:
             self.query_region = query_region
             for r in query_region['query_results']:
                 pass
 
-    def visualize(self,host="http://localhost"):
+    def visualize(self):
         print "Query Image"
         with open('temp.png', 'w') as f:
             f.write(base64.decodestring(self.query.query_json['image_data_b64']))
@@ -59,17 +57,18 @@ class VisualSearchResults(object):
         print self.description
         print "Results"
         for rank, r in self.similar_images:
+            frame_media_url = "/{}/frames/{}.jpg".format(r.video_id,r.frame_index)
             if r.region:
                 print "Rank {}, region".format(rank)
-                display(Image(crop_region_url(self.fix_url(r.frame['media_url'],host=host), r.region), width=300))
+                display(Image(crop_region_url(self.fix_url(frame_media_url), r.region), width=300))
             else:
                 print "Rank {}, full frame".format(rank)
-                display(Image(self.fix_url(r.frame['media_url'],host=host), width=300))
+                display(Image(self.fix_url(frame_media_url), width=300))
         print "\n\n\n"
 
-
-    def fix_url(self,url,host):
+    def fix_url(self,url):
         if url.startswith('/'):
-            return "{}{}".format(host,url)
+            url = "{}{}".format(self.query.context.server.replace('/api/',''),url)
+            return url
         else:
             return url

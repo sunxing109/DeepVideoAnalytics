@@ -1,0 +1,383 @@
+#!/usr/bin/env python
+import argparse
+import os
+import json
+import random
+import base64
+from deploy import compose, kube
+import subprocess
+
+try:
+    import requests
+except ImportError:
+    print "Warning! requests module is required to use exec functionality."
+
+
+def get_mode():
+    if not os.path.isfile("config.json"):
+        return configure()
+    return json.load(file("config.json"))
+
+
+DEFAULT_KUBE_WORKERS = [
+    {'name': 'coco',
+     'worker_env': 'LAUNCH_BY_NAME_detector_coco',
+     'max_cpu': 4,
+     'request_cpu': 1,
+     'request_memory': "2000Mi",
+     'max_memory': "4000Mi"
+     },
+    {'name': 'crnn',
+     'worker_env': 'LAUNCH_BY_NAME_analyzer_crnn',
+     'max_cpu': 4,
+     'request_cpu': 1,
+     'request_memory': "2000Mi",
+     'max_memory': "4000Mi"
+     },
+    {'name': 'extractor',
+     'worker_env': 'LAUNCH_Q_qextract',
+     'max_cpu': 1,
+     'request_cpu': 1,
+     'request_memory': "1000Mi",
+     'max_memory': "10000Mi"
+     },
+    {'name': 'face',
+     'worker_env': 'LAUNCH_BY_NAME_detector_face',
+     'max_cpu': 4,
+     'request_cpu': 1,
+     'request_memory': "2000Mi",
+     'max_memory': "4000Mi"
+     },
+    {'name': 'facenet',
+     'worker_env': 'LAUNCH_BY_NAME_indexer_facenet',
+     'max_cpu': 4,
+     'request_cpu': 1,
+     'request_memory': "2000Mi",
+     'max_memory': "4000Mi"
+     },
+    {'name': 'globalmodel',
+     'worker_env': 'LAUNCH_Q_GLOBAL_MODEL',
+     'max_cpu': 4,
+     'request_cpu': 1,
+     'request_memory': "2000Mi",
+     'max_memory': "8000Mi"
+     },
+    {'name': 'globalretriever',
+     'worker_env': 'LAUNCH_Q_GLOBAL_RETRIEVER',
+     'max_cpu': 4,
+     'request_cpu': 1,
+     'request_memory': "2000Mi",
+     'max_memory': "80000Mi"
+     },
+    {'name': 'inception',
+     'worker_env': 'LAUNCH_BY_NAME_indexer_inception',
+     'max_cpu': 4,
+     'request_cpu': 1,
+     'request_memory': "2000Mi",
+     'max_memory': "6000Mi"
+     },
+    {'name': 'retinception',
+     'worker_env': 'LAUNCH_BY_NAME_retriever_inception',
+     'max_cpu': 4,
+     'request_cpu': 1,
+     'request_memory': "2000Mi",
+     'max_memory': "80000Mi"
+     },
+    {'name': 'streamer',
+     'worker_env': 'LAUNCH_Q_qstreamer',
+     'max_cpu': 4,
+     'request_cpu': 1,
+     'request_memory': "500Mi",
+     'max_memory': "4000Mi"
+     },
+    {'name': 'tagger',
+     'worker_env': 'LAUNCH_BY_NAME_analyzer_tagger',
+     'max_cpu': 4,
+     'request_cpu': 1,
+     'request_memory': "2000Mi",
+     'max_memory': "4000Mi"
+     },
+    {'name': 'textbox',
+     'worker_env': 'LAUNCH_BY_NAME_detector_textbox',
+     'max_cpu': 8,
+     'request_cpu': 1,
+     'request_memory': "3000Mi",
+     'max_memory': "8000Mi"
+     },
+    {'name': 'trainer',
+     'worker_env': 'LAUNCH_Q_qtrainer',
+     'max_cpu': 8,
+     'request_cpu': 1,
+     'request_memory': "3000Mi",
+     'max_memory': "8000Mi"
+     },
+]
+
+GPU_CONFIG = {
+    1: {
+        "compose_filename": "deploy/compose/docker-compose-1-gpus.yaml",
+        "config": {"global_model_gpu_id": 0,
+                   "global_model_memory_fraction": 0.05,
+                   "workers":
+                       [(0, 0, "LAUNCH_BY_NAME_indexer_inception", "inception"),
+                        (0, 0.1, "LAUNCH_BY_NAME_analyzer_crnn", "crnn"),
+                        (0, 0.4, "LAUNCH_BY_NAME_detector_coco", "coco"),
+                        (0, 0.4, "LAUNCH_BY_NAME_detector_textbox", "textbox"),
+                        (0, 0, "LAUNCH_BY_NAME_detector_face", "face"),
+                        (0, 0, "LAUNCH_BY_NAME_indexer_facenet", "facenet"),
+                        (0, 0, "LAUNCH_BY_NAME_analyzer_tagger", "tagger")]
+                   }},
+    2: {
+        "compose_filename": "deploy/compose/docker-compose-2-gpus.yaml",
+        "config": {"global_model_gpu_id": 0,
+                   "global_model_memory_fraction": 0.1,
+                   "workers":
+                       [(0, 0, "LAUNCH_BY_NAME_analyzer_tagger", "tagger"),
+                        (0, 0.25, "LAUNCH_BY_NAME_indexer_inception", "inception"),
+                        (0, 0.2, "LAUNCH_BY_NAME_analyzer_crnn", "crnn"),
+                        (0, 0.5, "LAUNCH_BY_NAME_detector_coco", "coco"),
+                        (1, 0.5, "LAUNCH_BY_NAME_detector_textbox", "textbox"),
+                        (1, 0.25, "LAUNCH_BY_NAME_detector_face", "face"),
+                        (1, 0.21, "LAUNCH_BY_NAME_indexer_facenet", "facenet"),
+                        ]
+                   }},
+    4: {
+        "compose_filename": "deploy/compose/docker-compose-4-gpus.yaml",
+        "config": {"global_model_gpu_id": 2,
+                   "global_model_memory_fraction": 0.29,
+                   "workers":
+                       [(0, 0.3, "LAUNCH_BY_NAME_indexer_inception", "inception"),
+                        (0, 0.4, "LAUNCH_BY_NAME_analyzer_tagger", "tagger"),
+                        (0, 0.2, "LAUNCH_BY_NAME_analyzer_crnn", "crnn"),
+                        (1, 1.0, "LAUNCH_BY_NAME_detector_coco", "coco"),
+                        (2, 0.7, "LAUNCH_BY_NAME_detector_face", "face"),
+                        (3, 0.5, "LAUNCH_BY_NAME_detector_textbox", "textbox"),
+                        (3, 0.45, "LAUNCH_BY_NAME_indexer_facenet", "facenet")
+                        ]
+                   }}
+}
+
+
+def configure_kube():
+    config_template = {
+        "dbusername": "pguser",
+        "cpu_image": "akshayubhat/dva-auto:latest",
+        "gpu_image": "akshayubhat/dva-auto:gpu",
+        "dbpassword": "pgpass",
+        "rabbithost": "rbbit",
+        "rabbitusername": "rabbituser",
+        "rabbitpassword": "rabbitpass",
+        "awskey": "none",
+        "awssecret": "none",
+        "mediabucket": "dvamedia_{random_string}",
+        "secretkey": "{random_string}",
+        "superuser": "admin",
+        "namespace": "nsdva",
+        "superpass": "please_change_this",
+        "superemail": "admin@test.com",
+        "cloudfsprefix": "gs",
+        "cors_origin": "*",
+        "redishost": "redis-master",
+        "redispassword": "1234567890",
+        "zone": "us-west1-b",
+        "cluster_name": "dvacluster",
+        "machine_type": "custom-22-84480",
+        "nodes": 1,
+        "disk_size":100,
+        "branch": "stable",
+        "workers": DEFAULT_KUBE_WORKERS
+    }
+    config = {"mode": "kube"}
+    print "Creating configuration for kubernetes from kubeconfig.example.json"
+    if os.path.isfile('config.json'):
+        existing_config = json.load(file('config.json'))
+        if existing_config['mode'] != 'kube':
+            existing_config = {}
+        else:
+            print "Existing config.json found loading values from it."
+    else:
+        existing_config = {}
+    for k, v in sorted(config_template.items()):
+        if k in existing_config:
+            v = existing_config[k]
+        if k != "workers":
+            if (type(v) is str or type(v) is unicode) and "{random_string}" in v:
+                v = v.format(random_string=random.randint(0, 100000000))
+            new_value = raw_input(
+                "Enter value for {} (Current value is '{}' press enter to keep current value) >>".format(k, v))
+            if new_value.strip():
+                if type(v) is int:
+                    config[k] = int(new_value)
+                else:
+                    config[k] = new_value
+            else:
+                config[k] = v
+        else:
+            config[k] = v
+    print "worker configurations are stored in config.json"
+    return config
+
+
+def read_and_encode(path):
+    """
+    Read a .json file and encode using base 64 encoding
+    :param path:
+    :return:
+    """
+    with open(path) as f:
+        data = base64.b64encode(f.read())
+    return data
+
+
+def configure_compose(mode):
+    gpu_count = 0
+    init_process = 'configs/custom_defaults/init_process.json'
+    init_models = 'configs/custom_defaults/trained_models.json'
+    process = raw_input("Please specify init process or press enter to keep default"
+                        " ( configs/custom_defaults/init_process.json ) >>").strip()
+    if process.strip():
+        init_process = process
+    refresh = raw_input("Refresh docker images by pulling before start: Y/N ,"
+                        " press enter to keep default (Y) >>").strip()
+    if refresh.strip().lower() == 'n':
+        refresh = False
+    else:
+        refresh = True
+    cpu_image = raw_input("Please specify docker CPU image or press enter to keep default"
+                          " ( akshayubhat/dva-auto:latest ) >>").strip()
+    if cpu_image.strip():
+        cpu_image = cpu_image.strip()
+    else:
+        cpu_image = 'akshayubhat/dva-auto:latest'
+    gpu_image = ''
+    models = raw_input("Please specify default models or press enter to keep default"
+                       " ( configs/custom_defaults/trained_models.json ) >>").strip()
+    if process.strip():
+        init_models = models
+    if mode == 'cpu' or mode == 'gpu':
+        branch_input = raw_input("Please specify upstream branch (stable, master, etc.) or press enter to keep default"
+                                 " ( stable ) >>").strip()
+        if branch_input.strip():
+            branch = branch_input.strip()
+        else:
+            branch = "stable"
+    else:
+        branch = "master" # dev mode does not pulls from git
+    envs = {}
+    gpu_compose_filename = None
+    gpu_config = None
+    if os.path.isfile(os.path.expanduser('~/aws.env')):
+        envs.update(compose.load_envs(os.path.expanduser('~/aws.env')))
+        print '~/aws.env found. writing credentials to config.json'
+    else:
+        print '{} not found. not passing AWS creds. Please create ~/aws.env with AWS_ACCESS_KEY_ID ' \
+              'and AWS_SECRET_ACCESS_KEY or manually ' \
+              'add them to credentials in config.json'.format(os.path.expanduser('~/aws.env'))
+    if os.path.isfile(os.path.expanduser('~/do.env')):
+        envs.update(compose.load_envs(os.path.expanduser('~/do.env')))
+        print '~/do.env found. writing credentials to config.json'
+    else:
+        print '{} not found. not passing Digital Ocean creds.'.format(os.path.expanduser('~/do.env'))
+    if mode == 'gpu':
+        gpu_count = int(raw_input("Please select number of GPUs >>").strip())
+        gpu_compose_filename = GPU_CONFIG[gpu_count]['compose_filename']
+        gpu_config = GPU_CONFIG[gpu_count]['config']
+        gpu_image = raw_input("Please specify docker GPU image or press enter to keep default "
+                              "( akshayubhat/dva-auto:gpu ) >>").strip()
+        if gpu_image.strip():
+            gpu_image = gpu_image.strip()
+        else:
+            gpu_image = 'akshayubhat/dva-auto:gpu'
+        print "Memory fraction and gpu allocation for individual workers has been written to config.json, please edit" \
+              "the file to optionally specify custom allocation"
+    return {"mode": mode, 'gpus': gpu_count, 'init_process': read_and_encode(init_process),
+            'init_models': read_and_encode(init_models),
+            'credentials': envs, 'gpu_compose_filename': gpu_compose_filename, 'gpu_config': gpu_config,
+            'refresh': refresh, 'cpu_image':cpu_image, 'gpu_image':gpu_image, 'branch':branch}
+
+
+def configure(mode=None):
+    if mode is None or not mode:
+        mode = raw_input("Please select mode { dev, cpu, gpu, kube } >>").strip()
+    if mode not in {'dev', 'cpu', 'gpu', 'kube'}:
+        raise ValueError("{} is not a valid mode".format(mode))
+    if mode == 'kube':
+        mode_dict = configure_kube()
+    else:
+        mode_dict = configure_compose(mode)
+    with open("config.json", 'w') as f:
+        json.dump(mode_dict, f, indent=4)
+    print "Saved config.json"
+    return mode_dict
+
+
+def exec_script(script_path):
+    creds = json.load(file('creds.json'))
+    server, token = creds['server'], creds['token']
+    headers = {'Authorization': 'Token {}'.format(token)}
+    r = requests.post("{server}queries/".format(server=server), data={'script': file(script_path).read()},
+                      headers=headers)
+    r.raise_for_status()
+    if r.ok:
+        print r.json()
+
+
+if __name__ == '__main__':
+    help_text = """
+    Available options
+    ./dvactl configure   
+    ./dvactl create      
+    ./dvactl create_premptible  # create premptible node pool for Kubernetes      
+    ./dvactl start 
+    ./dvactl auth  # recreates creds.json  
+    ./dvactl ingest -f test.mp4  # copy file to ingest a path with /ingest/<uuid>.<exteion> is printed to stdout
+    ./dvactl exec -f script.json  # run process using creds.json and REST API
+    ./dvactl shell --container (container default:webserver) --pod (default:empty)  # enter into a shell
+    ./dvactl stop 
+    ./dvactl clean 
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("action",
+                        help="Select action out of { configure | create | start | auth | exec | stop | clean "
+                             "| clean_restart ")
+    parser.add_argument("-f", help="path to script to exec, e.g. process_livestream.json",
+                        default="")
+    parser.add_argument("--container", help="Container to enter shell into",
+                        default="webserver")
+    parser.add_argument("--pod", help="Pod to enter shell into (required for ./dvactl shell when running in kube mode)",
+                        default="")
+    args = parser.parse_args()
+    if args.action == 'configure':
+        configure()
+    elif args.action == 'exec':
+        if args.f.strip():
+            exec_script(args.f)
+        else:
+            raise ValueError("Please specify script path e.g. ./dvactl exec -f test.json")
+    else:
+        mode_dict = get_mode()
+        if mode_dict['mode'] == 'kube':
+            kube.handle_kube_operations(args)
+        else:
+            if args.action == 'create':
+                raise ValueError("create  is not required for compose, its used in kube mdoe to create GKE cluster")
+            elif args.action == 'shell':
+                containers = {line.strip().split()[-1] for line in
+                               subprocess.check_output(['docker','ps']).splitlines()
+                               if line.strip() and not line.strip().endswith('NAMES')}
+                if args.container in containers:
+                    print "Starting shell into container {}".format(args.container)
+                    command = " ".join(['docker','exec','-u="root"','-it',args.container,'bash'])
+                    print command
+                    # This is not safe and vulnerable to code execution on host, use only for interactive debugging.
+                    os.system(command)
+                else:
+                    raise ValueError("{} is not in list of currently running containers {}".format(args.container,
+                                                                                                   list(containers)))
+            else:
+                compose.handle_compose_operations(args, mode_dict['mode'], mode_dict['gpus'], mode_dict['init_process'],
+                                                  mode_dict['init_models'], mode_dict['credentials'],
+                                                  gpu_compose_filename=mode_dict['gpu_compose_filename'],
+                                                  gpu_config=mode_dict['gpu_config'], branch=mode_dict['branch'],
+                                                  refresh=mode_dict['refresh'],cpu_image=mode_dict['cpu_image'],
+                                                  gpu_image=mode_dict['gpu_image'])

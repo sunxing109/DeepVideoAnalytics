@@ -13,34 +13,16 @@ from ..models import TrainedModel, IndexEntries
 
 class Approximators(object):
     _index_approximator = {}
-    _name_to_index = {}
-    _shasum_to_index = {}
+    _selector_to_model = {}
     _session = None
 
     @classmethod
-    def get_approximator_by_name(cls,name):
-        if name not in Approximators._name_to_index:
-            di = TrainedModel.objects.get(name=name,model_type=TrainedModel.APPROXIMATOR)
-            Approximators._name_to_index[name] = di
-        else:
-            di = Approximators._name_to_index[name]
-        return cls.get_approximator(di),di
-
-    @classmethod
-    def get_approximator_by_shasum(cls,shasum):
-        if shasum not in Approximators._shasum_to_index:
-            di = TrainedModel.objects.get(shasum=shasum,model_type=TrainedModel.APPROXIMATOR)
-            Approximators._shasum_to_index[shasum] = di
-        else:
-            di = Approximators._shasum_to_index[shasum]
-        return cls.get_approximator(di),di
-
-    @classmethod
-    def get_approximator_by_pk(cls,pk):
-        di = TrainedModel.objects.get(pk=pk)
-        if di.model_type != TrainedModel.APPROXIMATOR:
-            raise ValueError("Model {} id: {} is not an Indexer".format(di.name,di.pk))
-        return cls.get_approximator(di),di
+    def get_trained_model(cls,args):
+        selector = args['trainedmodel_selector']
+        if not str(selector) in cls._selector_to_model:
+            di = TrainedModel.objects.get(**selector)
+            cls._selector_to_model[str(selector)] = (cls.get_approximator(di), di)
+        return cls._selector_to_model[str(selector)]
     
     @classmethod
     def get_approximator(cls,di):
@@ -51,47 +33,44 @@ class Approximators(object):
                 Approximators._index_approximator[di.pk] = approximator.LOPQApproximator(di.name, model_dirname)
             elif di.algorithm == 'PCA':
                 Approximators._index_approximator[di.pk] = approximator.PCAApproximator(di.name, model_dirname)
+            elif di.algorithm == 'FAISS':
+                Approximators._index_approximator[di.pk] = approximator.FAISSApproximator(di.name, model_dirname)
             else:
                 raise ValueError,"unknown approximator type {}".format(di.pk)
         return Approximators._index_approximator[di.pk]
 
     @classmethod
-    def approximate_queryset(cls,approx,da,queryset,video_id,event_id):
+    def approximate_queryset(cls,approx,da,queryset,event):
         new_approx_indexes = []
         for index_entry in queryset:
-            uid = str(uuid.uuid1()).replace('-', '_')
             approx_ind = IndexEntries()
-            vectors, entries = index_entry.load_index()
+            vectors = index_entry.get_vectors()
             if da.algorithm == 'LOPQ':
-                for i, e in enumerate(entries):
-                    e['codes'] = approx.approximate(vectors[i, :])
-                entries_fname = "{}/{}/indexes/{}.json".format(settings.MEDIA_ROOT, video_id, uid)
-                with open(entries_fname, 'w') as entryfile:
-                    json.dump(entries, entryfile)
-                approx_ind.entries_file_name = "{}.json".format(uid)
-                approx_ind.features_file_name = ""
+                new_entries = []
+                for i, e in enumerate(index_entry.iter_entries()):
+                    new_entries.append((e,approx.approximate(vectors[i, :])))
+                approx_ind.entries = new_entries
             elif da.algorithm == 'PCA':
                 # TODO optimize this by doing matmul rather than calling for each entry
-                approx_vectors = np.array([approx.approximate(vectors[i, :]) for i, e in enumerate(entries)])
-                entries_fname = "{}/{}/indexes/{}.json".format(settings.MEDIA_ROOT, video_id, uid)
-                feat_fname = "{}/{}/indexes/{}.npy".format(settings.MEDIA_ROOT, video_id, uid)
-                with open(entries_fname, 'w') as entryfile:
-                    json.dump(entries, entryfile)
-                with open(feat_fname, 'w') as featfile:
-                    np.save(featfile, approx_vectors)
-                approx_ind.entries_file_name = "{}.json".format(uid)
-                approx_ind.features_file_name = "{}.npy".format(uid)
+                event.create_dir()
+                approx_vectors = np.array([approx.approximate(vectors[i, :]) for i in range(index_entry.count)])
+                approx_ind.store_numpy_features(approx_vectors,event)
+                index_entry.copy_entries(approx_ind, event)
+            elif da.algorithm == "FAISS":
+                feat_fname = approx_ind.store_faiss_features(event)
+                approx.approximate_batch(np.atleast_2d(vectors.squeeze()),feat_fname)
+                index_entry.copy_entries(approx_ind, event)
             else:
                 raise NotImplementedError("unknown approximation algorithm {}".format(da.algorithm))
             approx_ind.indexer_shasum = index_entry.indexer_shasum
             approx_ind.approximator_shasum = da.shasum
             approx_ind.count = index_entry.count
             approx_ind.approximate = True
-            approx_ind.detection_name = index_entry.detection_name
-            approx_ind.contains_detections = index_entry.contains_detections
-            approx_ind.contains_frames = index_entry.contains_frames
+            approx_ind.min_frame_index = index_entry.min_frame_index
+            approx_ind.max_frame_index = index_entry.max_frame_index
+            approx_ind.target = index_entry.target
             approx_ind.video_id = index_entry.video_id
             approx_ind.algorithm = da.name
-            approx_ind.event_id = event_id
+            approx_ind.event_id = event.pk
             new_approx_indexes.append(approx_ind)
-        IndexEntries.objects.bulk_create(new_approx_indexes, batch_size=100)
+        event.finalize({'IndexEntries':new_approx_indexes})

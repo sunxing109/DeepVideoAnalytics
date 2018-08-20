@@ -16,31 +16,19 @@ DVA_PRIVATE_ENABLE = 'DVA_PRIVATE_ENABLE' in os.environ
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MEDIA_BUCKET = os.environ.get('MEDIA_BUCKET', None)
 CLOUD_FS_PREFIX = os.environ.get('CLOUD_FS_PREFIX', 's3') # By default AWS "s3", Tensorflow also supports "gs" for GCS
-DISABLE_NFS = os.environ.get('DISABLE_NFS',False)
+ENABLE_CLOUDFS = os.environ.get('ENABLE_CLOUDFS',False)
 
-if DISABLE_NFS and (MEDIA_BUCKET is None):
-    raise EnvironmentError("Either an NFS/Data volume or a remote S3 bucket is required!")
+if ENABLE_CLOUDFS and (MEDIA_BUCKET is None):
+    raise EnvironmentError("Either data volume (do not enable cloud fs) or a remote S3/GCS bucket is required!")
 
 # SECURITY WARNING: keep the secret key used in production secret!
-if 'SECRET_KEY' in os.environ:
-    SECRET_KEY = os.environ['SECRET_KEY']
-    AUTH_DISABLED = False
-else:
-    SECRET_KEY = 'changemeabblasdasbdbrp2$j&^'  # change this in prod
-    AUTH_DISABLED = os.environ.get('AUTH_DISABLED', False)
+SECRET_KEY = os.environ['SECRET_KEY']
+AUTH_DISABLED = os.environ.get('AUTH_DISABLED', False)
 
 INTERNAL_IPS = ['localhost','127.0.0.1']
 
 # SECURITY WARNING: don't run with debug turned on in production!
-if 'ENABLE_DEBUG' in os.environ:
-    DEBUG = True
-    DEV_ENV = False
-elif sys.platform == 'darwin':
-    DEV_ENV = True
-    DEBUG = True
-else:
-    DEBUG = False
-    DEV_ENV = False
+DEBUG = 'ENABLE_DEBUG' in os.environ
 
 if 'ALLOWED_HOSTS' in os.environ:
     ALLOWED_HOSTS = [k.strip() for k in os.environ['ALLOWED_HOSTS'].split(',') if k.strip()]
@@ -79,7 +67,7 @@ INSTALLED_APPS = [
                      'crispy_forms',
                      'rest_framework.authtoken',
                      'django_celery_beat'
-                 ] + (['dvap', ] if DVA_PRIVATE_ENABLE else [])+ (['debug_toolbar'] if DEV_ENV and DEBUG else [])
+                 ] + (['dvap', ] if DVA_PRIVATE_ENABLE else [])+ (['debug_toolbar'] if DEBUG else [])
 
 
 MIDDLEWARE_CLASSES = [
@@ -94,14 +82,24 @@ MIDDLEWARE_CLASSES = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-if DEV_ENV and DEBUG:
-    MIDDLEWARE_CLASSES = ['debug_toolbar.middleware.DebugToolbarMiddleware',] +MIDDLEWARE_CLASSES
+
+def show_toolbar(request):
+    return DEBUG
+
+
+if DEBUG:
+    MIDDLEWARE_CLASSES = ['debug_toolbar.middleware.DebugToolbarMiddleware',] + MIDDLEWARE_CLASSES
+    DEBUG_TOOLBAR_CONFIG = {
+        'SHOW_TOOLBAR_CALLBACK': 'dva.settings.show_toolbar',
+        # Rest of config
+    }
 CORS_ORIGIN_ALLOW_ALL = True
 CORS_ALLOW_METHODS = ('POST', 'GET',)
 CORS_ALLOW_CREDENTIALS = True
 CORS_URLS_REGEX = r'^api/.*$'
 REST_FRAMEWORK = {
-    'PAGE_SIZE': 10,
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
+    'PAGE_SIZE': 20,
     'DEFAULT_FILTER_BACKENDS': ('django_filters.rest_framework.DjangoFilterBackend',),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticatedOrReadOnly',
@@ -137,8 +135,6 @@ TEMPLATES = [
 # https://docs.djangoproject.com/en/1.10/ref/settings/#databases
 if 'BROKER_URL' in os.environ:
     BROKER_URL = os.environ['BROKER_URL']
-elif DEV_ENV:
-    BROKER_URL = 'amqp://{}:{}@localhost//'.format('dvauser', 'localpass')
 elif 'CONTINUOUS_INTEGRATION' in os.environ:
     BROKER_URL = 'amqp://{}:{}@localhost//'.format('guest', 'guest')
 else:
@@ -150,18 +146,7 @@ if 'DATABASE_URL' in os.environ:
     DATABASES = {}
     db_from_env = dj_database_url.config(conn_max_age=500)
     DATABASES['default'] = db_from_env
-elif DEV_ENV:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql_psycopg2',
-            'NAME': 'postgres',
-            'USER': 'postgres',
-            'PASSWORD': '',
-            'HOST': 'localhost',
-            'PORT': '',
-        }
-    }
-elif 'CONTINUOUS_INTEGRATION' in os.environ:
+elif 'CONTINUOUS_INTEGRATION' in os.environ or sys.platform == 'darwin':
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql_psycopg2',
@@ -223,7 +208,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 # https://docs.djangoproject.com/en/1.10/howto/static-files/
 MEDIA_ROOT = os.path.expanduser('~/media/') if sys.platform == 'darwin' or os.environ.get('TRAVISTEST',False) else "/root/media/"
 
-if DISABLE_NFS and ('LAUNCH_SERVER' in os.environ or 'LAUNCH_SERVER_NGINX' in os.environ) and 'MEDIA_URL' not in os.environ:
+if ENABLE_CLOUDFS and ('LAUNCH_SERVER' in os.environ or 'LAUNCH_SERVER_NGINX' in os.environ) and 'MEDIA_URL' not in os.environ:
     raise EnvironmentError('You must set MEDIA_URL (e.g. http://s3bucketname.s3-website-us-east-1.amazonaws.com/)'
                            ' or similar google storage bucket URL when launching websever in NFS disabled mode.')
 
@@ -247,14 +232,19 @@ GLOBAL_MODEL_QUEUE_ENABLED = os.environ.get('GLOBAL_MODEL',False)
 GLOBAL_RETRIEVER_QUEUE_ENABLED = False if os.environ.get('DISABLE_GLOBAL_RETRIEVER',False) else True
 
 Q_MANAGER = 'qmanager'
+Q_REDUCER = 'qreducer'
 Q_EXTRACTOR = 'qextract'
+Q_STREAMER = 'qstreamer'
 Q_TRAINER = 'qtrainer'
 Q_LAMBDA = 'qlambda'
 GLOBAL_MODEL_FLASK_SERVER_PORT = 8989
 GLOBAL_MODEL = 'qglobal_model'  # if a model specific queue does not exists then this is where the task ends up
 GLOBAL_RETRIEVER = 'qglobal_retriever' # if a retriever specific queue does not exists then the task ends up here
+DEFAULT_REDUCER_TIMEOUT_SECONDS = 60 # Reducer tasks checks every 60 seconds if map tasks are finished.
 
 TASK_NAMES_TO_QUEUE = {
+    "perform_process_monitoring":Q_REDUCER,
+    "perform_training_set_creation":Q_EXTRACTOR,
     "perform_region_import":Q_EXTRACTOR,
     "perform_model_import":Q_EXTRACTOR,
     "perform_video_segmentation":Q_EXTRACTOR,
@@ -265,8 +255,33 @@ TASK_NAMES_TO_QUEUE = {
     "perform_export":Q_EXTRACTOR,
     "perform_deletion":Q_EXTRACTOR,
     "perform_sync":Q_EXTRACTOR,
-    "perform_detector_import":Q_EXTRACTOR,
     "perform_import":Q_EXTRACTOR,
-    "perform_detector_training": Q_TRAINER,
+    "perform_stream_capture": Q_STREAMER,
+    "perform_matching": Q_TRAINER,
+    "perform_training": Q_TRAINER,
+    "perform_reduce": Q_REDUCER,
     "perform_video_decode_lambda": Q_LAMBDA
 }
+
+RESTARTABLE_TASKS = {'perform_video_segmentation', 'perform_indexing', 'perform_detection', 'perform_analysis',
+                     'perform_frame_download', 'perform_video_decode', 'perform_test'}
+
+NON_PROCESSING_TASKS = {'perform_training','perform_training_set_creation','perform_deletion', 'perform_export'}
+
+TRAINING_TASKS = {'perform_training','perform_training_set_creation'}
+
+# Is the code running on kubernetes?
+KUBE_MODE = 'KUBE_MODE' in os.environ
+# How many video segments should we process at a time?
+DEFAULT_SEGMENTS_BATCH_SIZE = int(os.environ.get('DEFAULT_SEGMENTS_BATCH_SIZE',10))
+# How many frames/images in a dataset should we process at a time?
+DEFAULT_FRAMES_BATCH_SIZE = int(os.environ.get('DEFAULT_FRAMES_BATCH_SIZE',500))
+# Default video decoding 1 frame per 30 frames AND all i-frames
+DEFAULT_RATE = int(os.environ.get('DEFAULT_RATE',30))
+# Max task attempts
+MAX_TASK_ATTEMPTS = 5
+# FAISS
+ENABLE_FAISS = 'DISABLE_FAISS' not in os.environ
+# Serializer version
+SERIALIZER_VERSION = "0.1"
+

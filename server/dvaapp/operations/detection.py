@@ -1,9 +1,5 @@
-import logging
 from ..models import TrainedModel
-try:
-    from dvalib import detector
-except ImportError:
-    logging.warning("Could not import indexer / clustering assuming running in front-end mode")
+from dvalib import detector
 
 
 class Detectors(object):
@@ -18,7 +14,7 @@ class Detectors(object):
                                                                   class_index_to_string=
                                                                   cd.arguments['class_index_to_string'])
             elif cd.detector_type == TrainedModel.YOLO:
-                Detectors._detectors[cd.pk] = detector.YOLODetector(cd.get_yolo_args())
+                raise NotImplementedError("YOLO model has been removed")
             elif cd.name == 'face':
                 Detectors._detectors[cd.pk] = detector.FaceDetector()
             elif cd.name == 'textbox':

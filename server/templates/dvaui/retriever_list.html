@@ -24,6 +24,7 @@
                 <table class="table dataTables-dict">
                 <thead>
                 <tr>
+                    <th>ID</th>
                     <th>Name</th>
                     <th>Algorithm</th>
                     <th>Source filter</th>
@@ -31,12 +32,12 @@
                     <th>Indexer shasum</th>
                     <th>Approximator shasum</th>
                     <th>Created</th>
-                    <th>Last built</th>
                 </tr>
                 </thead>
                 <tbody>
                 {% for r in object_list %}
                     <tr>
+                        <td>{{ r.pk }} </td>
                         <td>{{ r.name }} </td>
                         <td>{{ r.get_algorithm_display }}</td>
                         <td>{{ r.source_filters}}</td>
@@ -44,7 +45,6 @@
                         <td>{{ r.indexer_shasum }}</td>
                         <td>{{ r.approximator_shasum }}</td>
                         <td>{{ r.created }}</td>
-                        <td>{{ r.last_built }}</td>
                     </tr>
                 {% endfor %}
                 </tbody>

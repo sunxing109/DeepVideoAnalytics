@@ -12,7 +12,6 @@
                 <thead>
                 <tr>
                     <th class="text-center">type</th>
-                    <th class="text-center">name</th>
                     <th class="text-center">duration</th>
                     <th class="text-center">frames</th>
                     <th class="text-center">segments</th>
@@ -21,14 +20,13 @@
                     <th class="text-center">height</th>
                     <th class="text-center">width</th>
                     <th class="text-center">created</th>
-                    <th class="text-center">youtube</th>
+                    <th class="text-center">URL</th>
 
                 </tr>
                 </thead>
                 <tbody>
                     <tr>
-                        <td>{%  if object.dataset and object.query %} Query {% elif object.dataset %} Dataset {% else %}Video {% endif %}</td>
-                        <td>{{ object.name }} </td>
+                        <td>{%  if object.dataset and object.query %} Query {% elif object.stream %} Stream {% elif object.dataset %} Dataset {% else %}Video {% endif %}</td>
                         <td class="text-right">{{ object.length_in_seconds }} </td>
                         <td class="text-right">{{ object.frames }} </td>
                         <td class="text-right">{{ object.segments }} </td>
@@ -37,7 +35,7 @@
                         <td class="text-right">{{ object.height }} </td>
                         <td class="text-right">{{ object.width }} </td>
                         <td class="text-center">{{ object.created }}</td>
-                        <td class="text-center">{% if object.youtube_video %}<a href="{{ object.url }}" target="_blank">youtube link</a>{% endif %}</td>
+                        <td class="text-center">{% if object.url %}<a href="{{ object.url }}" target="_blank">{{ object.url }}</a>{% endif %}</td>
                     </tr>
                 </tbody>
                 </table>
@@ -53,12 +51,40 @@
         <div class="box">
         <div class="box-header with-border" >
             <h3>Video</h3>
-            {%  if object.youtube_video %}<a href="{{ object.url }}" target="_blank">{{ object.url }}</a>{% endif %}
+            {%  if object.url %}<a href="{{ object.url }}" target="_blank">{{ object.url }}</a>{% endif %}
         </div>
         <div class="box-body" style="text-align:center">
-            <video controls="" preload="metadata" name="media" style="width:90%;margin-left:auto;margin-right:auto">
-            <source src="{{url}}" type="video/mp4">
-            </video>
+            {% if not video.stream %}
+                <video controls="" preload="metadata" name="media" style="width:90%;margin-left:auto;margin-right:auto">
+                    <source src="{{url}}" type="video/mp4">
+                </video>
+            {% else %}
+                <h4>The video is a livestream. Please select segment below</h4>
+            {% endif %}
+                <table class="table dataTables">
+                <thead>
+                <tr>
+                    <th class="text-center">Segment index</th>
+                    <th class="text-center">start frame index</th>
+                    <th class="text-center">start_time</th>
+                    <th class="text-center">end_time</th>
+                    <th class="text-center">frames</th>
+                    <th class="text-center">view</th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for f in segments %}
+                    <tr>
+                        <td class="text-right">{{ f.segment_index }} </td>
+                        <td class="text-right">{{ f.start_index }} </td>
+                        <td class="text-right">{{ f.start_time }} </td>
+                        <td class="text-right">{{ f.end_time }} </td>
+                        <td class="text-right">{{ f.frame_count }} </td>
+                        <td class="text-center"><a href="/segments/{{ f.pk }}">view</a></td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+                </table>
         </div>
         </div>
         {% endif %}
@@ -125,21 +151,6 @@
                         <button type="submit" class="btn btn-danger btn-block"><i class="fa fa-delete"></i> Delete (only staff)</button>
                     </form>
                 </div>
-                <div class="col-sm-6">
-                    <form action="/rename_video" method="post">
-                        <div class="row">
-                            <div class="col-sm-6">
-                                <div class="form-group">
-                                    <input name="name" type="text" placeholder="New name for {{ object.name }}" required="required" class="form-control" />
-                                </div>
-                            </div>
-                            <div class="col-sm-6 text-center">
-                                <input type="hidden" value="{{ object.pk }}" name="video_id">{% csrf_token %}
-                                <button type="submit" class="btn btn-success btn-block"><i class="fa fa-edit"></i> Rename</button>
-                            </div>
-                        </div>
-                    </form>
-                </div>
             </div>
             <form action="/export_video" method="post">
             <div class="row m-t" style="margin-top:25px">
@@ -189,8 +200,16 @@
                 </tbody>
             </table>
             {% endif %}
+
             </div>
+
         </div>
+            <div class="box">
+            <div class="box-body">
+                <h3>Metadata</h3>
+                <textarea style="width:100%;height:150px;">{{ object.metadata }}</textarea>
+            </div>
+            </div>
 </div>
 </div>
 <div class="row">
@@ -250,7 +269,7 @@
                         <td class="text-right">{{ d.h }}</td>
                         {% if not object.dataset %}<td class="text-right"><a href="/segments/by_index/{{ object.pk }}/{{ d.segment_index }}">{{ d.segment_index }}</a></td>{% endif %}
                         <td class="text-right">{{ d.frame_index }} </td>
-                        <td class="text-center"><a href="/frames/{{ d.frame_id }}">view</a></td>
+                        <td class="text-center"><a href="/frames/by_index/{{ object.pk }}/{{ d.frame_index }}">view</a></td>
                     </tr>
                 {% endfor %}
                 {% for d in annotation_list %}
@@ -265,43 +284,13 @@
                         <td class="text-right">{{ d.h }}</td>
                         {% if not object.dataset %}<td class="text-right"><a href="/segments/by_index/{{ object.pk }}/{{ d.segment_index }}">{{ d.segment_index }}</a></td>{% endif %}
                         <td class="text-right">{{ d.frame_index }} </td>
-                        <td class="text-center"><a href="/frames/{{ d.frame_id }}">view</a></td>
+                        <td class="text-center"><a href="/frames/by_index/{{ object.pk }}/{{ d.frame_index }}">view</a></td>
                     </tr>
                 {% endfor %}
                 </tbody>
                 </table>
                 </div>
             </div>
-    </div>
-</div>
-
-<div class="row">
-    <div class="col-lg-6">
-        <div class="box box-primary">
-        <div class="box-body with-border">
-            <h4>Assign label to entire video</h4>
-            <form role="form"  method="post" action="/assign_video_labels" >
-                    <div class="form-group">
-                        <input id="labels" style="margin:10px auto" name="labels" class="form-control" type="text-area" rows="3" width="80%" required="" placeholder="provide a single label name, or a comma separated list">
-                    </div>
-                        <input name="video_pk" class="form-control" type="hidden" value="{{ object.pk }}">
-                    <div class="form-group">
-                    {% csrf_token %}
-                    <button type="submit" class="btn btn-primary pull-right">submit</button>
-                    </div>
-            </form>
-        </div>
-        </div>
-    </div>
-    <div class="col-lg-6">
-            <div class="box">
-            <div class="box-body">
-                <h3>Metadata</h3>
-                <textarea style="width:100%;height:300px;">
-                    {{ object.metadata }}
-                </textarea>
-            </div>
-        </div>
     </div>
 </div>
 </section>
